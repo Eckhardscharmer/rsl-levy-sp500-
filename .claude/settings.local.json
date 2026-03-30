@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3:*)",
+      "Bash(/usr/bin/python3 --version)",
+      "Bash(/usr/bin/python3 -c \"import openpyxl; print\\(''openpyxl ok''\\)\")",
+      "Bash(ls /Applications/XAMPP/xamppfiles/bin/php*)",
+      "Bash(/Applications/XAMPP/bin/php --version)",
+      "Read(//opt/homebrew/**)",
+      "Read(//usr/local/**)",
+      "Bash(/Applications/XAMPP/xamppfiles/bin/php -r \"\n\\\\$zip = new ZipArchive\\(\\);\n\\\\$zip->open\\('/Applications/XAMPP/htdocs/rsl/RSL_neu.xlsx'\\);\n// xlsx is a zip, list contents\nfor \\(\\\\$i = 0; \\\\$i < \\\\$zip->numFiles; \\\\$i++\\) {\n    echo \\\\$zip->getNameIndex\\(\\\\$i\\) . PHP_EOL;\n}\n\\\\$zip->close\\(\\);\n\")",
+      "Bash(/Applications/XAMPP/xamppfiles/bin/php -r \"\n\\\\$zip = new ZipArchive\\(\\);\n\\\\$zip->open\\('/Applications/XAMPP/htdocs/rsl/RSL_neu.xlsx'\\);\n\\\\$xml = \\\\$zip->getFromName\\('xl/worksheets/sheet1.xml'\\);\n// show first 5000 chars\necho substr\\(\\\\$xml, 0, 5000\\);\n\\\\$zip->close\\(\\);\n\")",
+      "Bash(/Applications/XAMPP/xamppfiles/bin/php -r \"\n\\\\$zip = new ZipArchive\\(\\);\n\\\\$zip->open\\('/Applications/XAMPP/htdocs/rsl/RSL_neu.xlsx'\\);\n\\\\$xml = \\\\$zip->getFromName\\('xl/sharedStrings.xml'\\);\necho substr\\(\\\\$xml, 0, 6000\\);\n\\\\$zip->close\\(\\);\n\")",
+      "Bash(/Applications/XAMPP/xamppfiles/bin/mysql --version)",
+      "Bash(/Applications/XAMPP/bin/mysql --version)"
+    ]
+  }
+}
