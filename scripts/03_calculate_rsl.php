@@ -13,9 +13,9 @@
 chdir(dirname(__DIR__));
 require_once 'config/database.php';
 
-define('SMA_DAYS',   182);   // 26 Wochen
+define('SMA_DAYS',   130);   // 26 Wochen × 5 Handelstage = 130
 define('TOP_N',      5);     // Anzahl Positionen
-define('MIN_DATA',   120);   // Mindest-Handelstage für validen SMA
+define('MIN_DATA',   100);   // Mindest-Handelstage für validen SMA (~20 Wochen)
 
 $args        = array_slice($argv, 1);
 $latestOnly  = in_array('--latest', $args);
@@ -27,7 +27,7 @@ $db = getDB();
 if ($latestOnly) {
     $sundays = [lastSunday()];
 } else {
-    $start = $dateArg ?? '2020-01-05'; // erster Sonntag 2020
+    $start = $dateArg ?? '2010-01-04'; // erster Sonntag 2010
     $sundays = getSundays($start, date('Y-m-d'));
 }
 
@@ -47,6 +47,18 @@ $stmtInsert = $db->prepare(
        rank_overall=VALUES(rank_overall), rank_in_sector=VALUES(rank_in_sector),
        is_selected=VALUES(is_selected)'
 );
+
+// Aktive M&A-Flags laden (nur für aktuellen Lauf relevant)
+$maFlagged = [];
+$maStmt = $db->query(
+    'SELECT ticker FROM m_and_a_flags WHERE is_active = 1'
+);
+foreach ($maStmt->fetchAll(PDO::FETCH_COLUMN) as $t) {
+    $maFlagged[$t] = true;
+}
+if (!empty($maFlagged)) {
+    echo "M&A-Filter aktiv für: " . implode(', ', array_keys($maFlagged)) . "\n\n";
+}
 
 // S&P 500-Mitglieder pro Datum (gecacht)
 $membershipCache = [];
@@ -99,8 +111,8 @@ foreach ($sundays as $idx => $sunday) {
     }
     unset($r);
 
-    // Top 5 mit Sektor-Diversifikation auswählen
-    $selected    = selectTopN($rankings, TOP_N);
+    // Top 5 mit Sektor-Diversifikation auswählen (M&A-geflaggte Aktien ausschließen)
+    $selected    = selectTopN($rankings, TOP_N, $maFlagged);
     $selectedSet = array_flip(array_column($selected, 'ticker'));
 
     // In DB speichern
@@ -184,9 +196,8 @@ function getSundays(string $from, string $to): array {
 }
 
 function getSP500Members(PDO $db, string $date, array &$cache): array {
-    // Gecacht nach Quartal (Änderungen sind selten)
-    $quarter = substr($date, 0, 7);
-    if (isset($cache[$quarter])) return $cache[$quarter];
+    // Gecacht nach exaktem Datum (Monats-Cache würde mid-month Zugänge verpassen)
+    if (isset($cache[$date])) return $cache[$date];
 
     $stmt = $db->prepare(
         'SELECT s.ticker, COALESCE(s.sector, "Unknown") as sector
@@ -203,7 +214,7 @@ function getSP500Members(PDO $db, string $date, array &$cache): array {
     foreach ($rows as $r) {
         $result[$r['ticker']] = $r['sector'];
     }
-    $cache[$quarter] = $result;
+    $cache[$date] = $result;
     return $result;
 }
 
@@ -224,13 +235,13 @@ function getLastTradingDay(PDO $db, string $refDate): ?string {
 }
 
 function calculateRSL(PDO $db, string $ticker, string $refDate): ?array {
-    // Letzte 182+20 Handelstage holen (Puffer für Wochenenden/Feiertage)
+    // Letzte 130+20 Handelstage holen (Puffer für fehlende Handelstage)
     $stmt = $db->prepare(
         'SELECT adj_close, price_date
          FROM prices
          WHERE ticker = ? AND price_date <= ?
          ORDER BY price_date DESC
-         LIMIT ' . (SMA_DAYS + 30)
+         LIMIT ' . (SMA_DAYS + 20)
     );
     $stmt->execute([$ticker, $refDate]);
     $rows = $stmt->fetchAll();
@@ -239,7 +250,7 @@ function calculateRSL(PDO $db, string $ticker, string $refDate): ?array {
 
     $currentPrice = (float)$rows[0]['adj_close'];
 
-    // SMA über die letzten 182 Einträge
+    // SMA über die letzten 130 Handelstage (= 26 Wochen)
     $smaRows = array_slice($rows, 0, SMA_DAYS);
     if (count($smaRows) < MIN_DATA) return null;
 
@@ -256,13 +267,15 @@ function calculateRSL(PDO $db, string $ticker, string $refDate): ?array {
 
 /**
  * Wählt Top-N Aktien aus, max. eine pro Sektor (Greedy-Algorithmus)
+ * M&A-geflaggte Aktien werden übersprungen.
  */
-function selectTopN(array $rankedStocks, int $n): array {
-    $selected       = [];
+function selectTopN(array $rankedStocks, int $n, array $maFlagged = []): array {
+    $selected        = [];
     $selectedSectors = [];
 
     foreach ($rankedStocks as $stock) {
         if (count($selected) >= $n) break;
+        if (isset($maFlagged[$stock['ticker']])) continue;   // M&A-Filter
         $sector = $stock['sector'] ?? 'Unknown';
         if (in_array($sector, $selectedSectors)) continue;
 

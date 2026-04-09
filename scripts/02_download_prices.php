@@ -14,20 +14,22 @@ chdir(dirname(__DIR__));
 require_once 'config/database.php';
 
 // ---- Konfiguration ----
-$DATA_START   = '2019-06-01';   // Warmup für 26W-SMA vor Backtest-Start 2020-01
+$DATA_START   = '2009-06-01';   // Warmup für 26W-SMA vor Backtest-Start 2010-01
 $DATA_END     = date('Y-m-d');
 $DELAY_MS     = 400;            // ms zwischen Requests (Rate-Limit schonen)
 $BATCH_SIZE   = 50;             // Fortschritts-Log alle N Ticker
 $MAX_RETRIES  = 3;
 
 // ---- Argumente parsen ----
-$args       = array_slice($argv, 1);
-$updateOnly = in_array('--update', $args);
-$tickerArgs = array_filter($args, fn($a) => $a !== '--update');
+$args        = array_slice($argv, 1);
+$updateOnly  = in_array('--update',   $args);
+$backfill    = in_array('--backfill', $args);
+$tickerArgs  = array_filter($args, fn($a) => !in_array($a, ['--update', '--backfill']));
 
+$modeLabel = $backfill ? 'Backfill (nur fehlende Historie)' : ($updateOnly ? 'Update (nur fehlende Tage)' : 'Vollständig');
 echo "=== Yahoo Finance Downloader ===\n";
 echo "Zeitraum: $DATA_START bis $DATA_END\n";
-echo "Modus: " . ($updateOnly ? 'Update (nur fehlende Tage)' : 'Vollständig') . "\n\n";
+echo "Modus: $modeLabel\n\n";
 
 $db = getDB();
 
@@ -56,9 +58,8 @@ $stmtLog = $db->prepare(
        rows_inserted=:rows2, status=:status2, error_msg=:err2'
 );
 
-$stmtLastDate = $db->prepare(
-    'SELECT MAX(price_date) as last_date FROM prices WHERE ticker = ?'
-);
+$stmtLastDate     = $db->prepare('SELECT MAX(price_date) FROM prices WHERE ticker = ?');
+$stmtEarliestDate = $db->prepare('SELECT MIN(price_date) FROM prices WHERE ticker = ?');
 
 $total = count($tickers);
 $done  = 0; $errors = 0; $skipped = 0;
@@ -66,9 +67,20 @@ $done  = 0; $errors = 0; $skipped = 0;
 foreach ($tickers as $ticker) {
     $done++;
 
-    // Bei Update-Modus: Startdatum bestimmen
+    // Datumsbereich bestimmen je nach Modus
     $fromDate = $DATA_START;
-    if ($updateOnly) {
+    $toDate   = $DATA_END;
+
+    if ($backfill) {
+        // Nur die fehlende Vergangenheit: DATA_START bis (ältestes vorhandenes Datum - 1 Tag)
+        $stmtEarliestDate->execute([$ticker]);
+        $earliestDate = $stmtEarliestDate->fetchColumn();
+        if (!$earliestDate || $earliestDate <= $DATA_START) {
+            $skipped++;
+            continue; // bereits vollständig vorhanden
+        }
+        $toDate = date('Y-m-d', strtotime($earliestDate . ' -1 day'));
+    } elseif ($updateOnly) {
         $stmtLastDate->execute([$ticker]);
         $lastDate = $stmtLastDate->fetchColumn();
         if ($lastDate && $lastDate >= $DATA_END) {
@@ -83,7 +95,7 @@ foreach ($tickers as $ticker) {
     // Fortschritts-Log
     if ($done % $BATCH_SIZE === 0 || $done === 1) {
         $pct = round($done / $total * 100, 1);
-        echo "[$done/$total | $pct%] Verarbeite $ticker (ab $fromDate)...\n";
+        echo "[$done/$total | $pct%] Verarbeite $ticker ($fromDate → $toDate)...\n";
     }
 
     // Download mit Retry
@@ -92,7 +104,7 @@ foreach ($tickers as $ticker) {
     $lastError = '';
 
     for ($attempt = 1; $attempt <= $MAX_RETRIES; $attempt++) {
-        $data = downloadYahooFinance($ticker, $fromDate, $DATA_END);
+        $data = downloadYahooFinance($ticker, $fromDate, $toDate);
         if ($data !== null) {
             $rows = insertPrices($db, $stmtInsert, $ticker, $data);
             $success = true;
@@ -136,13 +148,13 @@ echo "Übersprungen: $skipped\n";
 
 // Preisübersicht
 $stats = $db->query(
-    'SELECT COUNT(DISTINCT ticker) as tickers, COUNT(*) as rows,
+    'SELECT COUNT(DISTINCT ticker) as tickers, COUNT(*) as total_rows,
             MIN(price_date) as first_date, MAX(price_date) as last_date
      FROM prices'
 )->fetch();
 echo "\nDatenbank-Status:\n";
 echo "  Ticker:     {$stats['tickers']}\n";
-echo "  Datenpunkte: {$stats['rows']}\n";
+echo "  Datenpunkte: {$stats['total_rows']}\n";
 echo "  Von: {$stats['first_date']} bis {$stats['last_date']}\n\n";
 echo "Nächster Schritt: php scripts/03_calculate_rsl.php\n";
 
@@ -150,26 +162,87 @@ echo "Nächster Schritt: php scripts/03_calculate_rsl.php\n";
 // HILFSFUNKTIONEN
 // ============================================================
 
+/**
+ * Yahoo Finance Crumb + Cookie für authentifizierte Requests holen
+ * Wird einmalig gecacht für die gesamte Script-Laufzeit
+ */
+function getYahooCrumb(): array {
+    static $crumb  = null;
+    static $cookie = null;
+
+    if ($crumb !== null) return ['crumb' => $crumb, 'cookie' => $cookie];
+
+    $ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+    // Schritt 1: Session-Cookie via curl holen (file_get_contents wird von Yahoo blockiert)
+    $cookieFile = sys_get_temp_dir() . '/yahoo_cookie_' . getmypid() . '.txt';
+    $cmd1 = 'curl -s --http2 --max-time 15 -L -c ' . escapeshellarg($cookieFile)
+          . ' -H ' . escapeshellarg("User-Agent: $ua")
+          . ' -H ' . escapeshellarg('Accept: text/html,application/xhtml+xml')
+          . ' -H ' . escapeshellarg('Accept-Language: en-US,en;q=0.9')
+          . ' https://finance.yahoo.com/ 2>/dev/null';
+    shell_exec($cmd1);
+
+    // Schritt 2: Crumb via curl holen
+    $cmd2 = 'curl -s --http2 --max-time 10 -L -b ' . escapeshellarg($cookieFile)
+          . ' -H ' . escapeshellarg("User-Agent: $ua")
+          . ' -H ' . escapeshellarg('Accept: */*')
+          . ' https://query1.finance.yahoo.com/v1/test/getcrumb 2>/dev/null';
+    $crumbResponse = shell_exec($cmd2);
+
+    // Cookie-String aus Datei lesen
+    $cookieStr = '';
+    if (file_exists($cookieFile)) {
+        foreach (file($cookieFile) as $line) {
+            if (str_starts_with(trim($line), '#') || trim($line) === '') continue;
+            $parts = explode("\t", trim($line));
+            if (count($parts) >= 7) {
+                $cookieStr .= ($cookieStr ? '; ' : '') . $parts[5] . '=' . $parts[6];
+            }
+        }
+        @unlink($cookieFile);
+    }
+    $cookie = $cookieStr;
+
+    // Crumb ist ein einfacher String (keine JSON)
+    if ($crumbResponse && strlen($crumbResponse) < 50 && !str_starts_with(trim($crumbResponse), '{')) {
+        $crumb = trim($crumbResponse);
+    } else {
+        $crumb  = '';
+        $cookie = '';
+    }
+
+    return ['crumb' => $crumb, 'cookie' => $cookie];
+}
+
 function downloadYahooFinance(string $ticker, string $from, string $to): ?array {
     $period1 = strtotime($from);
     $period2 = strtotime($to) + 86400; // +1 Tag inkl.
 
-    // Yahoo Finance Chart API v8 (kein Auth nötig für historische Daten)
+    $auth  = getYahooCrumb();
+    $crumb = $auth['crumb'];
+    $cookie= $auth['cookie'];
+
+    // Yahoo Finance nutzt Bindestrich statt Punkt (BRK.B → BRK-B)
+    $yahooTicker = str_replace('.', '-', $ticker);
+
+    // Yahoo Finance blockiert PHP file_get_contents (TLS-Fingerprint) → curl via Shell (HTTP/2)
+    $crumbParam = $crumb ? '&crumb=' . urlencode($crumb) : '';
     $url = sprintf(
-        'https://query1.finance.yahoo.com/v8/finance/chart/%s?interval=1d&period1=%d&period2=%d&includeAdjustedClose=true',
-        urlencode($ticker), $period1, $period2
+        'https://query2.finance.yahoo.com/v8/finance/chart/%s?interval=1d&period1=%d&period2=%d&includeAdjustedClose=true%s',
+        urlencode($yahooTicker), $period1, $period2, $crumbParam
     );
 
-    $ctx = stream_context_create([
-        'http' => [
-            'timeout'     => 20,
-            'user_agent'  => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
-            'header'      => "Accept: application/json\r\nAccept-Language: en-US,en\r\n",
-        ],
-        'ssl' => ['verify_peer' => false],
-    ]);
+    $ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+    $cmd = 'curl -s --http2 --max-time 20 -L '
+         . '-H ' . escapeshellarg("User-Agent: $ua") . ' '
+         . '-H ' . escapeshellarg('Accept: application/json') . ' '
+         . '-H ' . escapeshellarg('Accept-Language: en-US,en;q=0.9') . ' '
+         . '-H ' . escapeshellarg('Referer: https://finance.yahoo.com/') . ' '
+         . ($cookie ? '-H ' . escapeshellarg("Cookie: $cookie") . ' ' : '')
+         . escapeshellarg($url) . ' 2>/dev/null';
 
-    $response = @file_get_contents($url, false, $ctx);
+    $response = shell_exec($cmd);
     if (!$response) return null;
 
     $json = json_decode($response, true);

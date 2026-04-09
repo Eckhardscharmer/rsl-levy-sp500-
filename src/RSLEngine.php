@@ -69,8 +69,16 @@ class RSLEngine {
         return array_reverse($stmt->fetchAll());
     }
 
+    /** Neueste Backtest-Config-ID */
+    private function getLatestConfigId(): int {
+        return (int)($this->db->query(
+            'SELECT MAX(id) FROM backtest_configs'
+        )->fetchColumn() ?: 1);
+    }
+
     /** Backtest-Performance-Daten für Chart */
-    public function getBacktestChartData(int $configId = 1): array {
+    public function getBacktestChartData(int $configId = 0): array {
+        if ($configId === 0) $configId = $this->getLatestConfigId();
         $stmt = $this->db->prepare(
             'SELECT value_date, portfolio_value, sp500_indexed, cash, invested, num_trades
              FROM backtest_portfolio_values
@@ -82,7 +90,8 @@ class RSLEngine {
     }
 
     /** Backtest-Ergebnisse */
-    public function getBacktestResults(int $configId = 1): ?array {
+    public function getBacktestResults(int $configId = 0): ?array {
+        if ($configId === 0) $configId = $this->getLatestConfigId();
         $stmt = $this->db->prepare(
             'SELECT r.*, c.initial_capital, c.start_date, c.end_date, c.transaction_cost
              FROM backtest_results r
@@ -94,7 +103,8 @@ class RSLEngine {
     }
 
     /** Backtest-Trades für Detail-Ansicht */
-    public function getBacktestTrades(int $configId = 1, int $limit = 100): array {
+    public function getBacktestTrades(int $configId = 0, int $limit = 100): array {
+        if ($configId === 0) $configId = $this->getLatestConfigId();
         $stmt = $this->db->prepare(
             'SELECT t.*, s.name
              FROM backtest_trades t

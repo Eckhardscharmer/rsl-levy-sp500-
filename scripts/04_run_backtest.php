@@ -2,8 +2,8 @@
 <?php
 /**
  * Sprint 4 — Backtest Engine
- * Simuliert wöchentliches RSL-Top-5-Portfolio (2020 bis heute)
- * Sektor-Diversifikation, 0,1% Transaktionskosten, Equal Weight
+ * Strategie: Halte Position bis Rang > 125; ersetze durch besten RSL aus neuem Sektor
+ * Sektor-Diversifikation, Equal Weight
  *
  * Aufruf:
  *   php scripts/04_run_backtest.php
@@ -20,13 +20,13 @@ foreach ($args as $a) {
     if (preg_match('/--capital=(\d+)/', $a, $m)) $capital = (float)$m[1];
 }
 
-define('TRANSACTION_COST', 0.001);  // 0,1%
 define('TOP_N',            5);
-define('BACKTEST_START',   '2020-01-05');
+define('HOLD_RANK',        125);    // Verkauf wenn Rang > 125
+define('BACKTEST_START',   '2010-01-04');
 
 echo "=== Backtest Engine ===\n";
 echo "Startkapital:       " . number_format($capital, 2) . " USD\n";
-echo "Transaktionskosten: " . (TRANSACTION_COST * 100) . "%\n";
+echo "Haltekriterium:     Rang <= " . HOLD_RANK . " (Verkauf wenn darunter)\n";
 echo "Start:              " . BACKTEST_START . "\n\n";
 
 $db = getDB();
@@ -41,7 +41,7 @@ $db->prepare(
        (name, start_date, end_date, initial_capital, num_positions,
         sma_weeks, transaction_cost, sector_diversify)
      VALUES (?, ?, ?, ?, 5, 26, ?, 1)'
-)->execute(['RSL_Top5_Weekly', BACKTEST_START, date('Y-m-d'), $capital, TRANSACTION_COST]);
+)->execute(['RSL_Top5_Weekly', BACKTEST_START, date('Y-m-d'), $capital, 0]);
 $configId = $db->lastInsertId();
 
 // Alle berechneten Sonntage laden
@@ -57,9 +57,14 @@ if (empty($sundays)) {
 
 echo "Simuliere " . count($sundays) . " Wochen...\n\n";
 
+// is_selected zurücksetzen — Backtest setzt es neu anhand tatsächlicher Holdings
+$db->exec(
+    "UPDATE rsl_rankings SET is_selected = 0 WHERE ranking_date >= '" . BACKTEST_START . "'"
+);
+
 // ---- Portfolio-Zustand ----
 $cash        = $capital;
-$holdings    = [];   // ticker => ['shares' => x, 'buy_price' => y, 'sector' => z]
+$holdings    = [];   // ticker => ['shares', 'buy_price', 'sector', 'rsl_buy']
 $totalTrades = 0;
 
 $stmtTrade = $db->prepare(
@@ -81,76 +86,99 @@ $stmtPortVal = $db->prepare(
 $spyStart = getPrice($db, 'SPY', BACKTEST_START);
 if (!$spyStart) $spyStart = getPrice($db, '^GSPC', BACKTEST_START);
 
-$prevTop5  = [];
-$weekNum   = 0;
+// M&A-Flags laden (nur für aktuelle Woche relevant, nicht für historische Daten)
+$maFlagged = [];
+$maStmt = $db->query('SELECT ticker FROM m_and_a_flags WHERE is_active = 1');
+foreach ($maStmt->fetchAll(PDO::FETCH_COLUMN) as $t) {
+    $maFlagged[$t] = true;
+}
+$lastSundayInLoop = end($sundays);
+if (!empty($maFlagged)) {
+    echo "M&A-Filter aktiv für aktuelle Woche: " . implode(', ', array_keys($maFlagged)) . "\n";
+}
+
+$weekNum = 0;
 
 foreach ($sundays as $sunday) {
     $weekNum++;
     $tradesThisWeek = 0;
+    $saleProceeds   = [];  // Verkaufserlöse dieser Woche (je Slot)
 
-    // Top-5 für diese Woche
+    // Alle Rankings dieser Woche, nach Rang sortiert
     $stmt = $db->prepare(
-        'SELECT ticker, sector, current_price, rsl
+        'SELECT ticker, sector, current_price, rsl, rank_overall
          FROM rsl_rankings
-         WHERE ranking_date = ? AND is_selected = 1
-         ORDER BY rsl DESC'
+         WHERE ranking_date = ?
+         ORDER BY rank_overall ASC'
     );
     $stmt->execute([$sunday]);
-    $newTop5 = $stmt->fetchAll();
+    $allRankings = $stmt->fetchAll();
 
-    if (empty($newTop5)) continue;
+    if (empty($allRankings)) continue;
 
-    $newTop5Tickers = array_column($newTop5, 'ticker');
-    $newTop5ByTicker = array_column($newTop5, null, 'ticker');
+    $rankingByTicker = array_column($allRankings, null, 'ticker');
 
-    // 1. Verkäufe: Positionen die aus Top-5 herausgefallen sind
+    // 1. VERKAUF: Positionen die unter Rang 125 gefallen oder nicht mehr im Index
     foreach (array_keys($holdings) as $ticker) {
-        if (!in_array($ticker, $newTop5Tickers)) {
-            $price = $newTop5ByTicker[$ticker]['current_price']
-                  ?? getPrice($db, $ticker, $sunday)
-                  ?? $holdings[$ticker]['buy_price'];
+        $rank = isset($rankingByTicker[$ticker])
+            ? (int)$rankingByTicker[$ticker]['rank_overall']
+            : PHP_INT_MAX;
 
-            $shares     = $holdings[$ticker]['shares'];
-            $gross      = $shares * $price;
-            $cost       = $gross * TRANSACTION_COST;
-            $net        = $gross - $cost;
-            $cash      += $net;
+        if ($rank > HOLD_RANK) {
+            $price = (float)(
+                $rankingByTicker[$ticker]['current_price']
+                ?? getPrice($db, $ticker, $sunday)
+                ?? $holdings[$ticker]['buy_price']
+            );
+
+            $shares = $holdings[$ticker]['shares'];
+            $gross  = $shares * $price;
+            $cost   = 0;
+            $net    = $gross;
+            $cash  += $net;
+
+            // Erlös merken — wird 1:1 in den Nachfolger reinvestiert
+            $saleProceeds[] = $net;
 
             $stmtTrade->execute([
                 $configId, $sunday, $ticker, 'SELL', $price, $shares,
-                $gross, $cost, $net, $holdings[$ticker]['sector'],
-                $holdings[$ticker]['rsl_buy'] ?? null
+                $gross, $cost, $net,
+                $holdings[$ticker]['sector'],
+                $holdings[$ticker]['rsl_buy'] ?? null,
             ]);
             unset($holdings[$ticker]);
             $tradesThisWeek++;
         }
     }
 
-    // 2. Käufe: Neue Top-5-Aktien die noch nicht im Portfolio sind
-    $toBuy = array_diff($newTop5Tickers, array_keys($holdings));
-    if (!empty($toBuy)) {
-        // Gleichmäßig auf alle Positionen aufteilen (inkl. bestehende)
-        $totalPositions = TOP_N;
-        $targetValue    = ($cash + portfolioValue($db, $holdings, $sunday)) / $totalPositions;
+    // 2. KAUF: freie Slots mit bestem RSL aus neuem Sektor füllen
+    // Slot-Kapital: Verkaufserlös des abgelösten Slots (kein Nachschuss, kein Umverteilen)
+    // Erstkauf (leerer Slot ohne Vorgänger): gleichmäßig aus verfügbarem Cash
+    $vacancies    = TOP_N - count($holdings);
+    $heldSectors  = array_column(array_values($holdings), 'sector');
+    $cashPerSlot  = $vacancies > 0 ? $cash / $vacancies : 0;  // nur für Erstkäufe
 
-        foreach ($newTop5 as $stock) {
-            if (!in_array($stock['ticker'], $toBuy)) continue;
+    if ($vacancies > 0) {
+        foreach ($allRankings as $stock) {
+            if ($vacancies <= 0) break;
+            if (isset($holdings[$stock['ticker']])) continue;
 
-            $price = $stock['current_price'];
+            // M&A-Filter: nur für die aktuellste (aktuelle) Woche anwenden
+            if ($sunday === $lastSundayInLoop && isset($maFlagged[$stock['ticker']])) continue;
+
+            $sector = $stock['sector'] ?? 'Unknown';
+            if (in_array($sector, $heldSectors)) continue;
+
+            $price = (float)$stock['current_price'];
             if ($price <= 0) continue;
 
-            $investAmount = min($targetValue, $cash * 0.98); // nie alles auf einmal
-            if ($investAmount < 10) continue;
+            // Slot-Budget: Erlös des verkauften Slots oder Cash-Anteil beim Erstkauf
+            $slotBudget = !empty($saleProceeds) ? array_shift($saleProceeds) : $cashPerSlot;
+            if ($slotBudget < 1) continue;
 
-            $gross  = $investAmount;
-            $cost   = $gross * TRANSACTION_COST;
-            $net    = $gross + $cost;
-
-            if ($net > $cash) {
-                $gross  = $cash / (1 + TRANSACTION_COST);
-                $cost   = $gross * TRANSACTION_COST;
-                $net    = $cash;
-            }
+            $gross = $slotBudget;
+            $cost  = 0;
+            $net   = $slotBudget;
 
             $shares = $gross / $price;
             $cash  -= $net;
@@ -158,24 +186,41 @@ foreach ($sundays as $sunday) {
             $holdings[$stock['ticker']] = [
                 'shares'    => $shares,
                 'buy_price' => $price,
-                'sector'    => $stock['sector'],
-                'rsl_buy'   => $stock['rsl'],
+                'sector'    => $sector,
+                'rsl_buy'   => (float)$stock['rsl'],
             ];
 
             $stmtTrade->execute([
                 $configId, $sunday, $stock['ticker'], 'BUY', $price, $shares,
-                $gross, $cost, $net, $stock['sector'], $stock['rsl']
+                $gross, $cost, $net, $sector, (float)$stock['rsl'],
             ]);
+
+            $heldSectors[] = $sector;
+            $vacancies--;
             $tradesThisWeek++;
         }
     }
 
-    // Portfolio-Gesamtwert berechnen
-    $invested  = 0;
+    // 3. is_selected für diese Woche aktualisieren
+    // Erst alle auf 0 zurücksetzen, dann exakt die gehaltenen Positionen auf 1
+    $db->prepare("UPDATE rsl_rankings SET is_selected = 0 WHERE ranking_date = ?")->execute([$sunday]);
+    if (!empty($holdings)) {
+        $placeholders = implode(',', array_fill(0, count($holdings), '?'));
+        $params = array_merge([$sunday], array_keys($holdings));
+        $db->prepare(
+            "UPDATE rsl_rankings SET is_selected = 1
+             WHERE ranking_date = ? AND ticker IN ($placeholders)"
+        )->execute($params);
+    }
+
+    // Portfolio-Gesamtwert
+    $invested = 0;
     foreach ($holdings as $ticker => $h) {
-        $currentPrice = $newTop5ByTicker[$ticker]['current_price']
-                     ?? getPrice($db, $ticker, $sunday)
-                     ?? $h['buy_price'];
+        $currentPrice = (float)(
+            $rankingByTicker[$ticker]['current_price']
+            ?? getPrice($db, $ticker, $sunday)
+            ?? $h['buy_price']
+        );
         $invested += $h['shares'] * $currentPrice;
     }
     $portfolioTotal = $cash + $invested;
@@ -187,7 +232,7 @@ foreach ($sundays as $sunday) {
 
     $stmtPortVal->execute([
         $configId, $sunday, $portfolioTotal, $cash, $invested,
-        $tradesThisWeek, $spyClose, $spyIndexed
+        $tradesThisWeek, $spyClose, $spyIndexed,
     ]);
 
     // Fortschritt
@@ -210,6 +255,27 @@ calculateAndSaveMetrics($db, $configId, $capital);
 
 echo "\n=== Backtest abgeschlossen ===\n";
 printResults($db, $configId);
+
+// Aktuelles Portfolio anzeigen
+echo "\nAktuelles Portfolio:\n";
+echo str_pad('Ticker', 8) . str_pad('Sektor', 35) . str_pad('Kurs', 10) . str_pad('RSL', 8) . "Rang\n";
+echo str_repeat('-', 70) . "\n";
+$latestSunday = end($sundays);
+$portfolio = $db->prepare(
+    'SELECT r.ticker, r.sector, r.current_price, r.rsl, r.rank_overall
+     FROM rsl_rankings r
+     WHERE r.ranking_date = ? AND r.is_selected = 1
+     ORDER BY r.rsl DESC'
+);
+$portfolio->execute([$latestSunday]);
+foreach ($portfolio->fetchAll() as $p) {
+    echo str_pad($p['ticker'], 8)
+       . str_pad(substr($p['sector'] ?? '', 0, 34), 35)
+       . str_pad(number_format($p['current_price'], 2), 10)
+       . str_pad(number_format($p['rsl'], 3), 8)
+       . '#' . $p['rank_overall'] . "\n";
+}
+
 echo "\nNächster Schritt: php scripts/05_start_server.php (oder Browser öffnen)\n";
 
 // ============================================================
@@ -258,7 +324,7 @@ function calculateAndSaveMetrics(PDO $db, int $configId, float $capital): void {
     $endVal = (float)$last['portfolio_value'];
 
     // CAGR
-    $days = (strtotime($last['value_date']) - strtotime($first['value_date'])) / 86400;
+    $days  = (strtotime($last['value_date']) - strtotime($first['value_date'])) / 86400;
     $years = max($days / 365.25, 0.01);
     $cagr  = (pow($endVal / $capital, 1 / $years) - 1) * 100;
 
@@ -276,25 +342,21 @@ function calculateAndSaveMetrics(PDO $db, int $configId, float $capital): void {
     }
 
     // Sharpe Ratio (wöchentliche Returns, risikoloser Zins 4% p.a.)
-    $rfWeekly = 0.04 / 52;
+    $rfWeekly      = 0.04 / 52;
     $excessReturns = array_map(fn($r) => $r - $rfWeekly, $weeklyReturns);
-    $mean = array_sum($excessReturns) / max(count($excessReturns), 1);
-    $variance = array_sum(array_map(fn($r) => pow($r - $mean, 2), $excessReturns)) / max(count($excessReturns) - 1, 1);
-    $sharpe = $variance > 0 ? ($mean / sqrt($variance)) * sqrt(52) : 0;
+    $mean          = array_sum($excessReturns) / max(count($excessReturns), 1);
+    $variance      = array_sum(array_map(fn($r) => pow($r - $mean, 2), $excessReturns))
+                     / max(count($excessReturns) - 1, 1);
+    $sharpe        = $variance > 0 ? ($mean / sqrt($variance)) * sqrt(52) : 0;
 
     // Benchmark-Return
-    $benchmarkEnd   = (float)$last['sp500_indexed'];
+    $benchmarkEnd    = (float)$last['sp500_indexed'];
     $benchmarkReturn = $benchmarkEnd > 0 ? (($benchmarkEnd - $capital) / $capital) * 100 : 0;
 
     // Trade-Statistiken
-    $trades = $db->prepare(
-        'SELECT action, trade_date,
-                (net_amount - gross_amount) as pnl
-         FROM backtest_trades WHERE config_id = ?'
-    );
-    $trades->execute([$configId]);
-    $tradeRows  = $trades->fetchAll();
-    $totalTrades = count($tradeRows);
+    $tradeCount = $db->prepare('SELECT COUNT(*) FROM backtest_trades WHERE config_id = ?');
+    $tradeCount->execute([$configId]);
+    $totalTrades = (int)$tradeCount->fetchColumn();
 
     $db->prepare(
         'INSERT INTO backtest_results
@@ -320,12 +382,14 @@ function calculateAndSaveMetrics(PDO $db, int $configId, float $capital): void {
 }
 
 function printResults(PDO $db, int $configId): void {
-    $r = $db->prepare(
-        'SELECT * FROM backtest_results WHERE config_id = ?'
-    );
+    $r = $db->prepare('SELECT * FROM backtest_results WHERE config_id = ?');
     $r->execute([$configId]);
     $res = $r->fetch();
     if (!$res) return;
+
+    $cfg = $db->prepare('SELECT start_date, end_date FROM backtest_configs WHERE id = ?');
+    $cfg->execute([$configId]);
+    $c = $cfg->fetch();
 
     echo "\n" . str_repeat('=', 50) . "\n";
     echo "BACKTEST-ERGEBNISSE\n";
@@ -333,9 +397,9 @@ function printResults(PDO $db, int $configId): void {
     echo sprintf("Gesamt-Rendite:     %+.2f%%\n", $res['total_return_pct']);
     echo sprintf("CAGR:               %+.2f%%\n", $res['cagr_pct']);
     echo sprintf("Max. Drawdown:      -%.2f%%\n", $res['max_drawdown_pct']);
-    echo sprintf("Sharpe Ratio:       %.3f\n",     $res['sharpe_ratio']);
-    echo sprintf("Benchmark (S&P500): %+.2f%%\n",  $res['benchmark_return_pct']);
-    echo sprintf("Outperformance:     %+.2f%%\n",  $res['outperformance_pct']);
-    echo sprintf("Anzahl Trades:      %d\n",        $res['num_total_trades']);
+    echo sprintf("Sharpe Ratio:       %.3f\n",    $res['sharpe_ratio']);
+    echo sprintf("Benchmark (S&P500): %+.2f%%\n", $res['benchmark_return_pct']);
+    echo sprintf("Outperformance:     %+.2f%%\n", $res['outperformance_pct']);
+    echo sprintf("Anzahl Trades:      %d\n",       $res['num_total_trades']);
     echo str_repeat('=', 50) . "\n";
 }
