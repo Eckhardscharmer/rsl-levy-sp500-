@@ -782,9 +782,11 @@ if (document.getElementById('lkpi-curr')) document.getElementById('lkpi-curr').t
 
 // ── Startdatum aus localStorage mit URL-Param synchronisieren ───────
 (function () {
-  const simStart = localStorage.getItem('sim_start_date');
+  const _defaultStart = '2024-01-01';
+  const simStart = localStorage.getItem('sim_start_date') || _defaultStart;
   const urlStart = new URLSearchParams(window.location.search).get('start_date');
-  if (simStart && simStart !== urlStart) {
+  if (!localStorage.getItem('sim_start_date')) localStorage.setItem('sim_start_date', _defaultStart);
+  if (simStart !== urlStart) {
     window.location.replace('landing.php?start_date=' + encodeURIComponent(simStart));
     return;
   }
