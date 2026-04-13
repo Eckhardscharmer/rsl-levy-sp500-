@@ -333,7 +333,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
 
 <footer class="container-fluid px-4 text-center">
   RSL nach Levy — S&P 500 Momentum-System &nbsp;|&nbsp;
-  Powered by XAMPP + MariaDB + PHP 8.2 &nbsp;|&nbsp;
+  Powered by Apache + MariaDB + PHP 8.2 &nbsp;|&nbsp;
   Daten: Yahoo Finance &nbsp;|&nbsp;
   <small>Kein Anlageberater — nur zu Informationszwecken</small>
 </footer>

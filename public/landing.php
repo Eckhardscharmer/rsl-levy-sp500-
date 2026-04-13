@@ -744,7 +744,7 @@ if ($hasData) {
 ════════════════════════════════════════════════════════════════ -->
 <div class="landing-footer">
   RSL nach Levy — S&amp;P 500 Momentum-System &nbsp;|&nbsp;
-  XAMPP · MariaDB · PHP 8.2 &nbsp;|&nbsp;
+  Apache · MariaDB · PHP 8.2 &nbsp;|&nbsp;
   Daten: Yahoo Finance &nbsp;|&nbsp;
   Kein Anlageberater — nur zu Informationszwecken
 </div>
