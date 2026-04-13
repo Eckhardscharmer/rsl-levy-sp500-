@@ -25,8 +25,9 @@ DATA_START = '2009-06-01'   # Warmup für 26W-SMA vor Backtest-Start 2010-01
 DATA_END   = date.today().isoformat()
 DELAY_SEC  = 1.5   # Sekunden zwischen Ticker-Downloads
 
-MYSQL_BIN  = '/Applications/XAMPP/xamppfiles/bin/mysql'
-MYSQL_ARGS = [MYSQL_BIN, '-u', 'root', 'rsl_system']
+import shutil as _shutil
+MYSQL_BIN  = _shutil.which('mysql') or '/usr/bin/mysql'
+MYSQL_ARGS = [MYSQL_BIN, '-u', 'root', '-prsl2024', 'rsl_system']
 
 def mysql_query(sql: str) -> str:
     """SQL über mysql-CLI ausführen, stdout zurückgeben."""
