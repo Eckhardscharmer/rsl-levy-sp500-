@@ -276,7 +276,7 @@ $endEurUsd   = (float)($stmtEur->fetchColumn() ?: $currentEurUsd);
         <a class="nav-link" href="index.php"><i class="bi bi-speedometer2 me-1"></i>Dashboard</a>
         <a class="nav-link active" href="simulation.php"><i class="bi bi-sliders me-1"></i>Annahmen</a>
         <a class="nav-link" href="ranking.php"><i class="bi bi-list-ol me-1"></i>Ranking</a>
-        <a class="nav-link" href="backtest.php"><i class="bi bi-clock-history me-1"></i>Backtest</a>
+        <a class="nav-link" href="backtest.php?start_date=<?= htmlspecialchars($startDate) ?>&capital=<?= (int)$startCapital ?>"><i class="bi bi-clock-history me-1"></i>Backtest</a>
       </div>
       <div class="currency-toggle ms-lg-3 mt-2 mt-lg-0 mb-2 mb-lg-0">
         <button class="cur-btn" id="btn-usd">$ USD</button>
