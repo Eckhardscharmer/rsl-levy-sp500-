@@ -39,6 +39,27 @@ function navUrl(string $page, string $universe, array $extra = []): string {
     <a class="navbar-brand fw-bold" href="<?= navUrl('index.php', $universe) ?>">
       <i class="bi bi-graph-up-arrow text-success me-2"></i>RSL nach Levy
     </a>
+
+    <!-- Schalter: direkt neben Brand, immer sichtbar, schiebt Navlinks nach rechts -->
+    <div class="d-flex flex-column align-items-stretch gap-1 ms-3 me-auto">
+      <div class="universe-toggle">
+        <button class="univ-btn sp500 <?= !$isDax ? 'active' : '' ?>" onclick="switchUniverse('sp500')" title="S&P 500 — US-Aktien">
+          <span class="flag-icon">🇺🇸</span> S&amp;P 500
+        </button>
+        <button class="univ-btn dax <?= $isDax ? 'active' : '' ?>" onclick="switchUniverse('dax')" title="DAX — Deutsche Aktien">
+          <span class="flag-icon">🇩🇪</span> DAX
+        </button>
+      </div>
+      <?php if (!$isDax): ?>
+      <div class="currency-toggle">
+        <button class="cur-btn" id="btn-usd" style="flex:1;">$ USD</button>
+        <button class="cur-btn" id="btn-eur" style="flex:1;">€ EUR</button>
+      </div>
+      <?php else: ?>
+      <div style="height:26px;"></div>
+      <?php endif; ?>
+    </div>
+
     <button class="navbar-toggler border-0" type="button" data-bs-toggle="collapse" data-bs-target="#navMain" aria-controls="navMain" aria-expanded="false">
       <span class="navbar-toggler-icon"></span>
     </button>
@@ -49,30 +70,6 @@ function navUrl(string $page, string $universe, array $extra = []): string {
         <a class="nav-link <?= $activePage === 'simulation'  ? 'active' : '' ?>" href="<?= navUrl('simulation.php', $universe) ?>"><i class="bi bi-sliders me-1"></i>Annahmen</a>
         <a class="nav-link <?= $activePage === 'ranking'     ? 'active' : '' ?>" href="<?= navUrl('ranking.php',    $universe) ?>"><i class="bi bi-list-ol me-1"></i>Ranking</a>
         <a class="nav-link <?= $activePage === 'backtest'    ? 'active' : '' ?>" href="<?= navUrl('backtest.php',   $universe) ?>"><i class="bi bi-clock-history me-1"></i>Backtest</a>
-      </div>
-
-      <div class="d-flex flex-column align-items-stretch gap-1 ms-lg-3 mt-2 mt-lg-0 mb-2 mb-lg-0">
-
-        <!-- Universe-Switcher -->
-        <div class="universe-toggle">
-          <button class="univ-btn sp500 <?= !$isDax ? 'active' : '' ?>" onclick="switchUniverse('sp500')" title="S&P 500 — US-Aktien">
-            <span class="flag-icon">🇺🇸</span> S&amp;P 500
-          </button>
-          <button class="univ-btn dax <?= $isDax ? 'active' : '' ?>" onclick="switchUniverse('dax')" title="DAX — Deutsche Aktien">
-            <span class="flag-icon">🇩🇪</span> DAX
-          </button>
-        </div>
-
-        <!-- Währungs-Toggle (nur für S&P 500, gleiche Breite wie Universe-Switcher) -->
-        <?php if (!$isDax): ?>
-        <div class="currency-toggle" style="width:100%;">
-          <button class="cur-btn" id="btn-usd" style="flex:1;">$ USD</button>
-          <button class="cur-btn" id="btn-eur" style="flex:1;">€ EUR</button>
-        </div>
-        <?php else: ?>
-        <div style="height:28px;"></div>
-        <?php endif; ?>
-
       </div>
     </div>
   </div>
