@@ -158,10 +158,10 @@ $top5 = $db->prepare(
     'SELECT r.ticker, s.name, r.sector, r.current_price, r.sma_26w, r.rsl, r.rank_overall
      FROM rsl_rankings r
      LEFT JOIN stocks s ON s.ticker = r.ticker
-     WHERE r.ranking_date = ? AND r.is_selected = 1
+     WHERE r.ranking_date = ? AND r.is_selected = 1 AND r.universe = ?
      ORDER BY r.rsl DESC'
 );
-$top5->execute([$latestSunday]);
+$top5->execute([$latestSunday, $universe]);
 $top5rows = $top5->fetchAll();
 
 echo "\nAktuelles Top-5 ($latestSunday):\n";

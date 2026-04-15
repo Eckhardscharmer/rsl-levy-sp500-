@@ -105,12 +105,13 @@ if ($hasData) {
         $weeklyPortfolio[$sunday] = $cash + $invested;
     }
 
-    // ── SPY Benchmark (auf startCapital normiert) ─────────────────────────
+    // ── Benchmark (SPY für S&P 500, ^GDAXI für DAX) auf startCapital normiert ──
+    $benchTicker = $isDax ? '^GDAXI' : 'SPY';
     $spyStmt = $db->prepare(
         'SELECT price_date, adj_close FROM prices
-         WHERE ticker = "SPY" AND price_date >= ? ORDER BY price_date ASC'
+         WHERE ticker = ? AND price_date >= ? ORDER BY price_date ASC'
     );
-    $spyStmt->execute([$startDate]);
+    $spyStmt->execute([$benchTicker, $startDate]);
     $spyByDate = [];
     foreach ($spyStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
         $spyByDate[$row['price_date']] = (float)$row['adj_close'];
@@ -230,7 +231,7 @@ if ($hasData) {
     <div class="col-6 col-md-2">
       <div class="card metric-card">
         <div class="metric-value text-muted" id="kpiBenchmark">—</div>
-        <div class="metric-label">S&amp;P 500 (SPY) <span id="kpi-bench-curr" class="text-muted" style="font-size:.65rem;text-transform:none;letter-spacing:0;opacity:.75;"></span></div>
+        <div class="metric-label"><?= $isDax ? 'DAX (^GDAXI)' : 'S&amp;P 500 (SPY)' ?> <span id="kpi-bench-curr" class="text-muted" style="font-size:.65rem;text-transform:none;letter-spacing:0;opacity:.75;"></span></div>
       </div>
     </div>
     <div class="col-6 col-md-2">
@@ -555,7 +556,7 @@ function buildChart(startDate) {
           pointHoverRadius: 4,
         },
         {
-          label: 'S&P 500 (SPY)',
+          label: '<?= $isDax ? 'DAX (^GDAXI)' : 'S&P 500 (SPY)' ?>',
           data: benchmark,
           borderColor: '#60a5fa',
           backgroundColor: 'transparent',
