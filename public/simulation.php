@@ -296,7 +296,7 @@ $endEurUsd   = (float)($stmtEur->fetchColumn() ?: $currentEurUsd);
                 </label>
                 <div class="input-group">
                   <span class="input-group-text" id="capital-currency-label"
-                        style="background:#eff6ff;border-color:#bfdbfe;color:#1e40af;font-weight:700;font-size:.9rem;">USD</span>
+                        style="background:#eff6ff;border-color:#bfdbfe;color:#1e40af;font-weight:700;font-size:.9rem;"><?= $isDax ? '€ EUR' : 'USD' ?></span>
                   <input type="text" class="form-control" id="inputCapitalDisplay"
                          value="<?= number_format($startCapital, 0, ',', '.') ?>"
                          style="font-size:1.15rem;font-weight:700;text-align:right;border-color:#bfdbfe;color:#1e3a8a;letter-spacing:.01em;"
@@ -335,7 +335,7 @@ $endEurUsd   = (float)($stmtEur->fetchColumn() ?: $currentEurUsd);
               <div class="kpi-label">Kapitalstand</div>
               <div class="kpi-value <?= $finalCapital >= $startCapital ? 'text-success' : 'text-danger' ?>" id="kpi-kapital-val" data-usd="<?= round($finalCapital) ?>">
                 <?= number_format($finalCapital, 0, ',', '.') ?>
-                <small style="font-size:.8rem;" id="kpi-kapital-sym">USD</small>
+                <small style="font-size:.8rem;" id="kpi-kapital-sym"><?= $isDax ? 'EUR' : 'USD' ?></small>
               </div>
             </div>
 
@@ -420,7 +420,7 @@ $endEurUsd   = (float)($stmtEur->fetchColumn() ?: $currentEurUsd);
                 <th>Unternehmen</th>
                 <th>Sektor</th>
                 <th class="text-end">Gewicht</th>
-                <th class="text-end sim-th-betrag">Betrag in USD</th>
+                <th class="text-end sim-th-betrag">Betrag in <?= $isDax ? 'EUR' : 'USD' ?></th>
                 <th class="text-end">RSL Score</th>
               </tr>
             </thead>
@@ -480,8 +480,9 @@ $endEurUsd   = (float)($stmtEur->fetchColumn() ?: $currentEurUsd);
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-// Currency toggle
-const _currency     = localStorage.getItem('currency') || 'USD';
+// Currency toggle — DAX ist immer EUR, keine Konvertierung
+const _isDax        = <?= $isDax ? 'true' : 'false' ?>;
+const _currency     = _isDax ? 'EUR' : (localStorage.getItem('currency') || 'USD');
 const currentEurUsd = <?= round($currentEurUsd, 6) ?>;
 const startEurUsd   = <?= round($startEurUsd, 6) ?>;
 const endEurUsd     = <?= round($endEurUsd, 6) ?>;
@@ -541,12 +542,12 @@ if (_currency === 'EUR') {
   const form           = document.querySelector('form');
   const params         = new URLSearchParams(window.location.search);
 
-  // Währungslabel am Input aktualisieren
+  // Währungslabel am Input aktualisieren (DAX: fix EUR, S&P 500: je nach Toggle)
   const currLabel = document.getElementById('capital-currency-label');
-  if (currLabel) currLabel.textContent = _currency === 'EUR' ? '€ EUR' : '$ USD';
+  if (currLabel && !_isDax) currLabel.textContent = _currency === 'EUR' ? '€ EUR' : '$ USD';
 
-  // EUR: angezeigte USD-Werte in EUR umrechnen
-  if (_currency === 'EUR') {
+  // EUR: angezeigte USD-Werte in EUR umrechnen (nur S&P 500)
+  if (!_isDax && _currency === 'EUR') {
     const usdVal = parseInt(hiddenCapital.value, 10) || 50000;
     displayInput.value = formatNum(Math.round(usdVal / currentEurUsd));
   }
@@ -569,21 +570,21 @@ if (_currency === 'EUR') {
     return n.toLocaleString('de-DE', { maximumFractionDigits: 0 });
   }
 
-  // Display formatieren und Hidden-Field synchronisieren (intern immer USD)
+  // Display formatieren und Hidden-Field synchronisieren
+  // DAX: intern EUR, keine Konvertierung; S&P 500: intern USD
   function syncCapital() {
     const raw = Math.max(1000, parseRaw(displayInput.value));
     displayInput.value  = formatNum(raw);
-    hiddenCapital.value = _currency === 'EUR' ? Math.round(raw * currentEurUsd) : raw;
+    hiddenCapital.value = (!_isDax && _currency === 'EUR') ? Math.round(raw * currentEurUsd) : raw;
   }
 
   // Wenn keine GET-Parameter vorhanden: gespeicherte Werte aus localStorage laden
-  // localStorage speichert immer USD; Anzeige je nach Währung konvertieren
   if (!params.has('capital') && !params.has('start_date')) {
     const savedCapitalUsd = localStorage.getItem('sim_capital');
     const savedStartDate  = localStorage.getItem('sim_start_date');
     if (savedCapitalUsd) {
       const usdVal     = Math.max(1000, parseInt(savedCapitalUsd, 10) || 50000);
-      const displayVal = _currency === 'EUR' ? Math.round(usdVal / currentEurUsd) : usdVal;
+      const displayVal = (!_isDax && _currency === 'EUR') ? Math.round(usdVal / currentEurUsd) : usdVal;
       displayInput.value  = formatNum(displayVal);
       hiddenCapital.value = usdVal;
     }
@@ -616,7 +617,7 @@ if (_currency === 'EUR') {
       const newLen = displayInput.value.length;
       displayInput.setSelectionRange(sel + (newLen - oldLen), sel + (newLen - oldLen));
     }
-    const usdVal = _currency === 'EUR' ? Math.round(raw * currentEurUsd) : raw;
+    const usdVal = (!_isDax && _currency === 'EUR') ? Math.round(raw * currentEurUsd) : raw;
     hiddenCapital.value  = usdVal || '';
     sliderCapital.value  = Math.min(Math.max(usdVal, 10000), 250000);
     clearTimeout(debounceTimer);
@@ -628,7 +629,7 @@ if (_currency === 'EUR') {
   // ── Kapital: Slider → Text-Input ─────────────────────────────────────────
   sliderCapital.addEventListener('input', () => {
     const usdVal     = parseInt(sliderCapital.value, 10);
-    const displayVal = _currency === 'EUR' ? Math.round(usdVal / currentEurUsd) : usdVal;
+    const displayVal = (!_isDax && _currency === 'EUR') ? Math.round(usdVal / currentEurUsd) : usdVal;
     displayInput.value  = formatNum(displayVal);
     hiddenCapital.value = usdVal;
   });
