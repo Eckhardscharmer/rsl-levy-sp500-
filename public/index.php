@@ -20,8 +20,9 @@ foreach ($db->query('SELECT ticker FROM m_and_a_flags WHERE is_active = 1')
 
 // ── Simulation ab Nutzer-Startdatum (identische Logik wie simulation.php) ──
 $minDate      = '2010-01-04';
-$maxDate      = $db->query("SELECT MAX(ranking_date) FROM rsl_rankings WHERE universe=?")->execute([$universe]) ? $db->query("SELECT MAX(ranking_date) FROM rsl_rankings WHERE universe='$universe'")->fetchColumn() : date('Y-m-d');
-if (!$maxDate) $maxDate = date('Y-m-d');
+$_stmt = $db->prepare("SELECT MAX(ranking_date) FROM rsl_rankings WHERE universe=?");
+$_stmt->execute([$universe]);
+$maxDate = $_stmt->fetchColumn() ?: date('Y-m-d');
 $simStartDate = $_GET['start_date'] ?? '2024-01-01';
 if ($simStartDate < $minDate) $simStartDate = $minDate;
 if ($simStartDate > $maxDate) $simStartDate = $maxDate;
