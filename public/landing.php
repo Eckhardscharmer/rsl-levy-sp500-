@@ -370,12 +370,12 @@ if ($hasData) {
   .robustness-highlight .rh-sub   { font-size: .82rem; color: rgba(255,255,255,.55); margin-top: .2rem; }
 
   /* ── Navbar ─────────────────────────────────────────────────── */
-  .landing-nav { background: rgba(6,13,26,.85) !important; backdrop-filter: blur(8px);
-    border-bottom: 1px solid rgba(255,255,255,.08); position: fixed; top: 0; left: 0; right: 0; z-index: 100; }
-  .landing-nav .container-fluid { min-height: 56px; height: auto; }
-  .landing-nav .navbar-brand { color: #fff !important; font-weight: 700; }
-  .landing-nav .nav-link { color: rgba(255,255,255,.6) !important; font-size: .875rem; padding: .375rem .65rem !important; }
-  .landing-nav .nav-link:hover, .landing-nav .nav-link.active { color: #fff !important; }
+  .navbar { background: rgba(6,13,26,.85) !important; backdrop-filter: blur(8px);
+    border-bottom: 1px solid rgba(255,255,255,.08) !important; position: fixed; top: 0; left: 0; right: 0; z-index: 100; }
+  .navbar .container-fluid { min-height: 56px; height: auto; }
+  .navbar .navbar-brand { color: #fff !important; font-weight: 700; }
+  .navbar .nav-link { color: rgba(255,255,255,.6) !important; font-size: .875rem; padding: .375rem .65rem !important; }
+  .navbar .nav-link:hover, .navbar .nav-link.active { color: #fff !important; }
   .currency-toggle { background: rgba(255,255,255,.1); border-radius: 20px; padding: 2px; display: flex; align-items: center; }
   .cur-btn { background: transparent; border: none; color: rgba(255,255,255,.45); font-size: .75rem; font-weight: 700; padding: .2rem .65rem; border-radius: 18px; cursor: pointer; transition: all .15s; line-height: 1.6; }
   .cur-btn.active { background: #2563eb; color: #fff; box-shadow: 0 0 0 2px rgba(37,99,235,.4); }
