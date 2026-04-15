@@ -259,7 +259,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
               <th class="ps-3">Unternehmen</th>
               <th>Sektor</th>
               <th class="text-end">Gewicht</th>
-              <th class="text-end" id="th-betrag">Betrag in USD</th>
+              <th class="text-end" id="th-betrag">Betrag in <?= $isDax ? 'EUR' : 'USD' ?></th>
               <th class="text-end pe-3">RSL Score</th>
             </tr>
           </thead>
@@ -307,7 +307,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
         <div class="mt-3 text-center">
           <div style="font-size:.76rem;color:#6c757d;text-transform:uppercase;letter-spacing:.4px;">Gesamtwert</div>
           <div id="js-total-display" style="font-size:1.5rem;font-weight:700;color:#212529;">
-            — <span style="font-size:.9rem;font-weight:400;color:#6c757d;">USD</span>
+            — <span style="font-size:.9rem;font-weight:400;color:#6c757d;"><?= $isDax ? 'EUR' : 'USD' ?></span>
           </div>
         </div>
         <?php endif; ?>
@@ -329,6 +329,9 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
+const _isDax     = <?= $isDax ? 'true' : 'false' ?>;
+const _currency  = _isDax ? 'EUR' : (localStorage.getItem('currency') || 'USD');
+
 (function () {
   // ── Simulation-Parameter aus localStorage mit URL-Parametern abgleichen ──
   const params      = new URLSearchParams(window.location.search);
@@ -354,7 +357,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
   const simReturn    = <?= round($simReturn, 8) ?>;
   const simCapital   = parseFloat(localStorage.getItem('sim_capital')) || 50000;
   const totalUsd     = simCapital * (1 + simReturn);
-  const total        = _currency === 'EUR' ? totalUsd / currentEurUsd : totalUsd;
+  const total        = (!_isDax && _currency === 'EUR') ? totalUsd / currentEurUsd : totalUsd;
   const sym          = _currency === 'EUR' ? '€' : '$';
 
   // ── Tabellen-Header aktualisieren ───────────────────────────────────────
