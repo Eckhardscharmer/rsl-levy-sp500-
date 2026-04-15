@@ -501,22 +501,23 @@ if (kpiChangeCurr) kpiChangeCurr.textContent = _currLabelSim;
   const el = document.getElementById('kpi-change-val');
   if (!el) return;
   let pct;
-  if (_currency === 'EUR') {
-    // EUR-Rendite: identische Referenzdaten wie Backtest (erster/letzter Simulations-Sonntag)
+  if (!_isDax && _currency === 'EUR') {
+    // S&P 500 EUR-Rendite: USD-Werte mit Währungseffekt umrechnen
     const finalUsd = parseFloat(el.dataset.finalUsd);
     const startUsd = parseFloat(el.dataset.startUsd);
     const finalEur = finalUsd / endEurUsd;
     const startEur = startUsd / startEurUsd;
     pct = (finalEur / startEur - 1) * 100;
   } else {
+    // DAX oder USD: Rendite direkt aus Simulation (bereits in Heimwährung)
     pct = parseFloat(el.dataset.pctUsd);
   }
   el.textContent = (pct >= 0 ? '+' : '') + pct.toLocaleString('de-DE', {minimumFractionDigits:1, maximumFractionDigits:1}) + '%';
   el.className = 'kpi-value ' + (pct >= 0 ? 'text-success' : 'text-danger');
 })();
 
-if (_currency === 'EUR') {
-  // Kapitalstand-KPI: endEurUsd (konsistent mit %-Berechnung, beide = letzter Simulations-Sonntag)
+if (!_isDax && _currency === 'EUR') {
+  // S&P 500: USD-Werte in EUR umrechnen
   const kpiVal = document.getElementById('kpi-kapital-val');
   const kpiSym = document.getElementById('kpi-kapital-sym');
   if (kpiVal && kpiVal.dataset.usd) {
@@ -524,14 +525,13 @@ if (_currency === 'EUR') {
     kpiVal.childNodes[0].textContent = eur.toLocaleString('de-DE') + ' ';
     if (kpiSym) kpiSym.textContent = 'EUR';
   }
-  // Tabellen-Header
   document.querySelectorAll('.sim-th-betrag').forEach(el => el.textContent = 'Betrag in EUR');
-  // Portfolio-Werte: endEurUsd für alle Snapshot-Beträge (einheitlicher Referenzkurs = letzter Sonntag)
   document.querySelectorAll('.sim-mkt-val, .sim-pv').forEach(el => {
     const usd = parseFloat(el.dataset.usd);
     if (!isNaN(usd)) el.textContent = Math.round(usd / endEurUsd).toLocaleString('de-DE');
   });
 }
+// DAX: Werte sind bereits in EUR — nur Zahlen formatieren, kein Umrechnen nötig
 
 (function () {
   const displayInput   = document.getElementById('inputCapitalDisplay');
