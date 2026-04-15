@@ -28,7 +28,7 @@ function navUrl(string $page, string $universe, array $extra = []): string {
   .univ-btn.active { color: #fff; box-shadow: 0 0 0 2px rgba(255,255,255,.25); }
   .univ-btn.sp500.active { background: #1d4ed8; }
   .univ-btn.dax.active   { background: #b91c1c; }
-  .currency-toggle { background: rgba(255,255,255,.1); border-radius: 20px; padding: 2px; display: flex; align-items: center; }
+  .currency-toggle { background: rgba(255,255,255,.1); border-radius: 20px; padding: 2px; display: flex; align-items: center; width: 100%; }
   .cur-btn { background: transparent; border: none; color: rgba(255,255,255,.45); font-size: .75rem; font-weight: 700; padding: .2rem .65rem; border-radius: 18px; cursor: pointer; transition: all .15s; line-height: 1.6; }
   .cur-btn.active { background: #2563eb; color: #fff; box-shadow: 0 0 0 2px rgba(37,99,235,.4); }
   .flag-icon { font-size: 1rem; line-height: 1; }
@@ -51,7 +51,7 @@ function navUrl(string $page, string $universe, array $extra = []): string {
         <a class="nav-link <?= $activePage === 'backtest'    ? 'active' : '' ?>" href="<?= navUrl('backtest.php',   $universe) ?>"><i class="bi bi-clock-history me-1"></i>Backtest</a>
       </div>
 
-      <div class="d-flex align-items-center gap-2 ms-lg-3 mt-2 mt-lg-0 mb-2 mb-lg-0 flex-wrap">
+      <div class="d-flex flex-column align-items-stretch gap-1 ms-lg-3 mt-2 mt-lg-0 mb-2 mb-lg-0">
 
         <!-- Universe-Switcher -->
         <div class="universe-toggle">
@@ -63,12 +63,14 @@ function navUrl(string $page, string $universe, array $extra = []): string {
           </button>
         </div>
 
-        <!-- Währungs-Toggle (nur für S&P 500) -->
+        <!-- Währungs-Toggle (nur für S&P 500, gleiche Breite wie Universe-Switcher) -->
         <?php if (!$isDax): ?>
-        <div class="currency-toggle">
-          <button class="cur-btn" id="btn-usd">$ USD</button>
-          <button class="cur-btn" id="btn-eur">€ EUR</button>
+        <div class="currency-toggle" style="width:100%;">
+          <button class="cur-btn" id="btn-usd" style="flex:1;">$ USD</button>
+          <button class="cur-btn" id="btn-eur" style="flex:1;">€ EUR</button>
         </div>
+        <?php else: ?>
+        <div style="height:28px;"></div>
         <?php endif; ?>
 
       </div>
