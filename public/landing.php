@@ -11,7 +11,9 @@ $top5 = $rsl->getCurrentTop5(null, $universe);
 
 // ── Start-Datum (via GET, gesetzt vom JS-Redirect) ─────────────────────────
 $minDate   = '2010-01-04';
-$maxDate   = $db->query("SELECT MAX(ranking_date) FROM rsl_rankings WHERE universe='$universe'")->fetchColumn() ?: date('Y-m-d');
+$_mxStmt = $db->prepare("SELECT MAX(ranking_date) FROM rsl_rankings WHERE universe=?");
+$_mxStmt->execute([$universe]);
+$maxDate = $_mxStmt->fetchColumn() ?: date('Y-m-d');
 $startDate = $_GET['start_date'] ?? $minDate;
 if ($startDate < $minDate) $startDate = $minDate;
 if ($startDate > $maxDate) $startDate = $maxDate;
@@ -32,10 +34,10 @@ if ($hasData) {
     $stmt = $db->prepare(
         'SELECT r.ranking_date, r.ticker, r.sector, r.current_price, r.rsl, r.rank_overall
          FROM rsl_rankings r
-         WHERE r.ranking_date >= ?
+         WHERE r.ranking_date >= ? AND r.universe = ?
          ORDER BY r.ranking_date ASC, r.rank_overall ASC'
     );
-    $stmt->execute([$startDate]);
+    $stmt->execute([$startDate, $universe]);
     $byDate = [];
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
         $byDate[$row['ranking_date']][] = $row;
@@ -54,10 +56,11 @@ if ($hasData) {
         $isLast       = ($i === count($simSundays) - 1);
         $saleProceeds = [];
 
+        $holdRank = $isDax ? ($sunday >= '2021-09-20' ? 10 : 7) : 125;
         foreach (array_keys($holdings) as $ticker) {
             $rank = isset($rankByTicker[$ticker])
                 ? (int)$rankByTicker[$ticker]['rank_overall'] : PHP_INT_MAX;
-            if ($rank > 125) {
+            if ($rank > $holdRank) {
                 $price = (float)($rankByTicker[$ticker]['current_price'] ?? $holdings[$ticker]['buy_price']);
                 $cash += $holdings[$ticker]['shares'] * $price;
                 $saleProceeds[] = $holdings[$ticker]['shares'] * $price;
@@ -97,12 +100,13 @@ if ($hasData) {
         $weeklyPortfolio[$sunday] = $cash + $invested;
     }
 
-    // ── SPY Benchmark ─────────────────────────────────────────────────────
+    // ── Benchmark (SPY oder ^GDAXI) ────────────────────────────────────────
+    $benchTicker = $isDax ? '^GDAXI' : 'SPY';
     $spyStmt = $db->prepare(
         'SELECT price_date, adj_close FROM prices
-         WHERE ticker = "SPY" AND price_date >= ? ORDER BY price_date ASC'
+         WHERE ticker = ? AND price_date >= ? ORDER BY price_date ASC'
     );
-    $spyStmt->execute([$startDate]);
+    $spyStmt->execute([$benchTicker, $startDate]);
     $spyByDate = [];
     foreach ($spyStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
         $spyByDate[$row['price_date']] = (float)$row['adj_close'];
@@ -160,7 +164,7 @@ if ($hasData) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RSL nach Levy — Momentum-Strategie</title>
+<title>RSL nach Levy — <?= $isDax ? 'DAX' : 'S&P 500' ?> Momentum-Strategie</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
 <style>
@@ -409,13 +413,16 @@ if ($hasData) {
           <i class="bi bi-graph-up-arrow"></i>
           Quantitative Momentum-Strategie
         </div>
-        <h1>RSL nach Levy<br>S&amp;P 500</h1>
+        <h1>RSL nach Levy<br><?= $isDax ? 'DAX' : 'S&amp;P 500' ?></h1>
         <p class="hero-sub">
           Systematisches Aktien-Screening auf Basis der <strong style="color:#fff;">Relativen Stärke nach Levy</strong> —
           wöchentliches Rebalancing, strikte Sektor-Diversifikation, vollständig regelbasiert.
+          <?php if ($isDax): ?>
+          Universum: <strong style="color:#fff;">DAX 40</strong> — 40 führende deutsche Unternehmen.
+          <?php endif; ?>
         </p>
         <div class="d-flex gap-3 flex-wrap">
-          <a href="index.php" class="btn btn-enter">
+          <a href="<?= navUrl('index.php', $universe) ?>" class="btn btn-enter">
             <i class="bi bi-speedometer2 me-2"></i>Dashboard öffnen
           </a>
         </div>
@@ -429,7 +436,7 @@ if ($hasData) {
           </div>
           <div class="hero-kpi">
             <div class="hero-kpi-val kv-blue" id="lkpi-outperf">—</div>
-            <div class="hero-kpi-label">vs. S&amp;P 500</div>
+            <div class="hero-kpi-label">vs. <?= $isDax ? 'DAX (^GDAXI)' : 'S&amp;P 500' ?></div>
           </div>
           <div class="hero-kpi">
             <div class="hero-kpi-val kv-amber" id="lkpi-cagr">—</div>
@@ -466,6 +473,14 @@ if ($hasData) {
       <div class="col-md-6 col-xl-4 fade-up">
         <div class="step-card blue">
           <div class="step-num blue">1</div>
+          <?php if ($isDax): ?>
+          <div class="step-title">Universum: DAX 40</div>
+          <div class="step-body">
+            Das Anlageuniversum umfasst alle Mitglieder des <strong>DAX 40</strong>
+            auf Basis der historischen Index-Zusammensetzung.
+            Datenbasis: 40 führende deutsche Unternehmen mit Kurshistorie ab 2010.
+          </div>
+          <?php else: ?>
           <div class="step-title">Universum: S&amp;P 500</div>
           <div class="step-body">
             Das Anlageuniversum umfasst alle Mitglieder des S&amp;P 500
@@ -473,6 +488,7 @@ if ($hasData) {
             Ehemalige Mitglieder werden berücksichtigt, um Survivorship Bias zu vermeiden.
             Datenbasis: ~580 Aktien mit Kurshistorie ab 2019.
           </div>
+          <?php endif; ?>
         </div>
       </div>
 
@@ -495,7 +511,7 @@ if ($hasData) {
           <div class="step-num amber">3</div>
           <div class="step-title">Ranking &amp; Selektion</div>
           <div class="step-body">
-            Alle S&amp;P 500-Aktien werden nach RSL absteigend sortiert.
+            Alle <?= $isDax ? 'DAX' : 'S&amp;P 500' ?>-Aktien werden nach RSL absteigend sortiert.
             Aus den <strong>Top-Aktien</strong> werden exakt <strong>5 Positionen</strong> ausgewählt —
             mit der Bedingung, dass je Sektor (GICS) maximal eine Aktie ins Portfolio aufgenommen wird
             (Greedy-Algorithmus, höchster RSL gewinnt).
@@ -509,7 +525,11 @@ if ($hasData) {
           <div class="step-title">Halte-Regel</div>
           <div class="step-body">
             Eine Position wird <strong>gehalten</strong>, solange ihre Aktie unter den
+            <?php if ($isDax): ?>
+            <strong>Top 10</strong> des Rankings bleibt (Rang ≤ 10, vor Sept. 2021: Rang ≤ 7).
+            <?php else: ?>
             <strong>Top 125</strong> des Rankings bleibt (Rang ≤ 125).
+            <?php endif; ?>
             Erst wenn sie aus diesem Bereich herausfällt, wird sie verkauft und durch
             die beste verfügbare Aktie aus einem noch nicht vertretenen Sektor ersetzt.
             Dies verhindert unnötiges Churning.
@@ -573,7 +593,7 @@ if ($hasData) {
           <div class="assumption-icon"><i class="bi bi-shuffle"></i></div>
           <div>
             <div class="assumption-title">Kein Survivorship Bias</div>
-            <div class="assumption-body">Die historische S&amp;P 500-Zusammensetzung wird wochengenau berücksichtigt. Aktien, die nach 2020 aus dem Index entfernt wurden, sind im Backtest enthalten.</div>
+            <div class="assumption-body">Die historische <?= $isDax ? 'DAX' : 'S&amp;P 500' ?>-Zusammensetzung wird wochengenau berücksichtigt. <?= $isDax ? 'Aktien, die aus dem DAX ausgeschieden sind, werden im Backtest berücksichtigt.' : 'Aktien, die nach 2020 aus dem Index entfernt wurden, sind im Backtest enthalten.' ?></div>
           </div>
         </div>
         <div class="assumption-item">
@@ -681,6 +701,46 @@ if ($hasData) {
 
     <div class="robustness-highlight fade-up">
       <div class="row align-items-center g-4">
+        <?php if ($isDax): ?>
+        <div class="col-md-8">
+          <h5 style="color:#fff; font-weight:700; margin-bottom:.5rem;">Backtest-Ergebnis: DAX (2010–2026)</h5>
+          <p style="color:rgba(255,255,255,.65); font-size:.9rem; margin:0; line-height:1.7;">
+            Über den gesamten Zeitraum von Januar 2010 bis heute — mit wöchentlichem Rebalancing
+            und Sektordiversifikation — wird die RSL-Strategie auf den <strong style="color:#fff;">DAX 40</strong>
+            angewendet. Benchmark ist der DAX-Index (<strong style="color:#fff;">^GDAXI</strong>).
+            Alle Kurse und Ergebnisse in <strong style="color:#4ade80;">EUR</strong>.
+            Genaue Kennzahlen entnehmen Sie dem <a href="<?= navUrl('backtest.php', $universe) ?>" style="color:#93c5fd;">Backtest</a>.
+          </p>
+          <p style="color:rgba(255,255,255,.45); font-size:.78rem; margin-top:.8rem;">
+            Hinweis: Vergangenheitsergebnisse sind kein Indikator für zukünftige Entwicklungen.
+            Diese Auswertung dient ausschließlich zu Informationszwecken und stellt keine Anlageberatung dar.
+          </p>
+        </div>
+        <div class="col-md-4">
+          <div class="row g-3 text-center">
+            <div class="col-6">
+              <div class="rh-label">Universum</div>
+              <div class="rh-value" style="font-size:1.3rem;">DAX 40</div>
+              <div class="rh-sub">Deutsche Aktien</div>
+            </div>
+            <div class="col-6">
+              <div class="rh-label">Benchmark</div>
+              <div class="rh-value" style="font-size:1.3rem;">^GDAXI</div>
+              <div class="rh-sub">DAX-Index</div>
+            </div>
+            <div class="col-6">
+              <div class="rh-label">Halte-Schwelle</div>
+              <div class="rh-value" style="font-size:1.3rem; color:#4ade80;">Top 10</div>
+              <div class="rh-sub">ab Sept. 2021</div>
+            </div>
+            <div class="col-6">
+              <div class="rh-label">Währung</div>
+              <div class="rh-value" style="font-size:1.3rem; color:#93c5fd;">EUR</div>
+              <div class="rh-sub">kein FX-Risiko</div>
+            </div>
+          </div>
+        </div>
+        <?php else: ?>
         <div class="col-md-8">
           <h5 style="color:#fff; font-weight:700; margin-bottom:.5rem;">Backtest-Ergebnis: 16 Jahre (2010–2026)</h5>
           <p style="color:rgba(255,255,255,.65); font-size:.9rem; margin:0; line-height:1.7;">
@@ -719,6 +779,7 @@ if ($hasData) {
             </div>
           </div>
         </div>
+        <?php endif; ?>
       </div>
     </div>
   </div>
@@ -728,7 +789,7 @@ if ($hasData) {
      FOOTER
 ════════════════════════════════════════════════════════════════ -->
 <div class="landing-footer">
-  RSL nach Levy — S&amp;P 500 Momentum-System &nbsp;|&nbsp;
+  RSL nach Levy — <?= $isDax ? 'DAX' : 'S&amp;P 500' ?> Momentum-System &nbsp;|&nbsp;
   Apache · MariaDB · PHP 8.2 &nbsp;|&nbsp;
   Daten: Yahoo Finance &nbsp;|&nbsp;
   Kein Anlageberater — nur zu Informationszwecken
@@ -747,8 +808,9 @@ const obs = new IntersectionObserver(entries => {
 }, { threshold: 0.12 });
 document.querySelectorAll('.fade-up').forEach(el => obs.observe(el));
 
-// ── Currency toggle ──────────────────────────────────────────────────
-const _currency    = localStorage.getItem('currency') || 'USD';
+// ── Universe / Currency ──────────────────────────────────────────────
+const _isDax       = <?= $isDax ? 'true' : 'false' ?>;
+const _currency    = _isDax ? 'EUR' : (localStorage.getItem('currency') || 'USD');
 document.getElementById('btn-usd')?.classList.toggle('active', _currency === 'USD');
 document.getElementById('btn-eur')?.classList.toggle('active', _currency === 'EUR');
 document.getElementById('btn-usd')?.addEventListener('click', () => { localStorage.setItem('currency', 'USD'); location.reload(); });
@@ -760,10 +822,9 @@ const endEurUsd     = <?= round($endEurUsd, 6) ?>;
 const allEurRates   = <?= $chartEurRates ?>;
 
 // Währungshinweis in KPI-Labels setzen
-const currLabel = _currency === 'EUR' ? '(EUR)' : '(USD)';
-document.getElementById('lkpi-curr')?.textContent && (document.getElementById('lkpi-curr').textContent = currLabel);
-document.querySelectorAll('.lkpi-curr-ref').forEach(el => el.textContent = currLabel);
+const currLabel = (_isDax || _currency === 'EUR') ? '(EUR)' : '(USD)';
 if (document.getElementById('lkpi-curr')) document.getElementById('lkpi-curr').textContent = currLabel;
+document.querySelectorAll('.lkpi-curr-ref').forEach(el => el.textContent = currLabel);
 
 // ── Startdatum aus localStorage mit URL-Param synchronisieren ───────
 (function () {
@@ -772,7 +833,8 @@ if (document.getElementById('lkpi-curr')) document.getElementById('lkpi-curr').t
   const urlStart = new URLSearchParams(window.location.search).get('start_date');
   if (!localStorage.getItem('sim_start_date')) localStorage.setItem('sim_start_date', _defaultStart);
   if (simStart !== urlStart) {
-    window.location.replace('landing.php?start_date=' + encodeURIComponent(simStart));
+    const _univ = new URLSearchParams(window.location.search).get('universe') || localStorage.getItem('universe') || 'sp500';
+    window.location.replace('landing.php?start_date=' + encodeURIComponent(simStart) + '&universe=' + encodeURIComponent(_univ));
     return;
   }
 
@@ -790,7 +852,7 @@ if (document.getElementById('lkpi-curr')) document.getElementById('lkpi-curr').t
   // FX-Faktor für EUR (erster/letzter Simulations-Sonntag — identisch zu backtest.php)
   const eurStart  = allEurRates ? (allEurRates.find(v => v > 0) || currentEurUsd) : currentEurUsd;
   const eurEnd    = allEurRates ? ([...allEurRates].reverse().find(v => v > 0) || currentEurUsd) : currentEurUsd;
-  const fxFactor  = _currency === 'EUR' ? (eurStart / eurEnd) : 1;
+  const fxFactor  = (!_isDax && _currency === 'EUR') ? (eurStart / eurEnd) : 1;
 
   const totalReturn = base      > 0 ? ((endPort  / base)      * fxFactor - 1) * 100 : 0;
   const benchReturn = baseBench > 0 ? ((endBench / baseBench) * fxFactor - 1) * 100 : 0;
