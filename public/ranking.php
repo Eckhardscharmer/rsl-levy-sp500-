@@ -2,10 +2,14 @@
 require_once __DIR__ . '/../src/RSLEngine.php';
 $rsl = new RSLEngine();
 
-$latestDate = $rsl->getLatestRankingDate();
+$universe = $_GET['universe'] ?? 'sp500';
+if (!in_array($universe, ['sp500', 'dax'])) $universe = 'sp500';
+$isDax    = ($universe === 'dax');
+
+$latestDate = $rsl->getLatestRankingDate($universe);
 $date       = $_GET['date'] ?? $latestDate;
 $limit      = (int)($_GET['limit'] ?? 100);
-$ranking    = $rsl->getFullRanking($date, $limit);
+$ranking    = $rsl->getFullRanking($date, $limit, $universe);
 // Portfolio-Markierung erfolgt client-seitig via localStorage (sim_portfolio_tickers)
 $db            = getDB();
 $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='EURUSD=X' ORDER BY price_date DESC LIMIT 1")->fetchColumn() ?: 1.10);
@@ -49,27 +53,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
 </style>
 </head>
 <body>
-<nav class="navbar navbar-expand-lg navbar-dark">
-  <div class="container-fluid px-4">
-    <a class="navbar-brand fw-bold" href="index.php"><i class="bi bi-graph-up-arrow text-success me-2"></i>RSL nach Levy</a>
-    <button class="navbar-toggler border-0" type="button" data-bs-toggle="collapse" data-bs-target="#navMain" aria-controls="navMain" aria-expanded="false">
-      <span class="navbar-toggler-icon"></span>
-    </button>
-    <div class="collapse navbar-collapse" id="navMain">
-      <div class="navbar-nav ms-auto">
-        <a class="nav-link" href="landing.php"><i class="bi bi-house me-1"></i>Start</a>
-        <a class="nav-link" href="index.php"><i class="bi bi-speedometer2 me-1"></i>Dashboard</a>
-        <a class="nav-link" href="simulation.php"><i class="bi bi-sliders me-1"></i>Annahmen</a>
-        <a class="nav-link active" href="ranking.php"><i class="bi bi-list-ol me-1"></i>Ranking</a>
-        <a class="nav-link" href="backtest.php"><i class="bi bi-clock-history me-1"></i>Backtest</a>
-      </div>
-      <div class="currency-toggle ms-lg-3 mt-2 mt-lg-0 mb-2 mb-lg-0">
-        <button class="cur-btn" id="btn-usd">$ USD</button>
-        <button class="cur-btn" id="btn-eur">€ EUR</button>
-      </div>
-    </div>
-  </div>
-</nav>
+<?php $activePage = 'ranking'; include __DIR__ . '/inc_navbar.php'; ?>
 
 <div class="container-fluid px-4 py-4">
   <div class="d-flex justify-content-between align-items-center mb-3">
@@ -194,8 +178,9 @@ const sectorFilter     = document.getElementById('sectorFilter');
 const showSelectedOnly = document.getElementById('showSelectedOnly');
 const rows             = document.querySelectorAll('#rankingTable tbody tr');
 
-// Portfolio-Ticker aus localStorage (gespeichert von simulation.php)
-const storedTickers = JSON.parse(localStorage.getItem('sim_portfolio_tickers') || '[]');
+// Portfolio-Ticker aus localStorage (gespeichert von simulation.php, universe-spezifisch)
+const _universe = '<?= $universe ?>';
+const storedTickers = JSON.parse(localStorage.getItem('sim_portfolio_tickers_' + _universe) || '[]');
 const portfolioSet  = new Set(storedTickers);
 
 // Zeilen markieren

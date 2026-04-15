@@ -3,7 +3,12 @@ require_once __DIR__ . '/../src/RSLEngine.php';
 $rsl = new RSLEngine();
 $db  = getDB();
 
-$latestDate = $rsl->getLatestRankingDate();
+// ── Universe ───────────────────────────────────────────────────────────────
+$universe = $_GET['universe'] ?? 'sp500';
+if (!in_array($universe, ['sp500', 'dax'])) $universe = 'sp500';
+$isDax    = ($universe === 'dax');
+
+$latestDate = $rsl->getLatestRankingDate($universe);
 $hasData    = !empty($latestDate);
 
 // ── M&A-Filter (identisch zu simulation.php) ──────────────────────────────
@@ -15,7 +20,8 @@ foreach ($db->query('SELECT ticker FROM m_and_a_flags WHERE is_active = 1')
 
 // ── Simulation ab Nutzer-Startdatum (identische Logik wie simulation.php) ──
 $minDate      = '2010-01-04';
-$maxDate      = $db->query('SELECT MAX(ranking_date) FROM rsl_rankings')->fetchColumn() ?: date('Y-m-d');
+$maxDate      = $db->query("SELECT MAX(ranking_date) FROM rsl_rankings WHERE universe=?")->execute([$universe]) ? $db->query("SELECT MAX(ranking_date) FROM rsl_rankings WHERE universe='$universe'")->fetchColumn() : date('Y-m-d');
+if (!$maxDate) $maxDate = date('Y-m-d');
 $simStartDate = $_GET['start_date'] ?? '2024-01-01';
 if ($simStartDate < $minDate) $simStartDate = $minDate;
 if ($simStartDate > $maxDate) $simStartDate = $maxDate;
@@ -25,10 +31,10 @@ $simStmt = $db->prepare(
             COALESCE(s.name, r.ticker) AS company
      FROM rsl_rankings r
      LEFT JOIN stocks s ON s.ticker = r.ticker
-     WHERE r.ranking_date >= ?
+     WHERE r.ranking_date >= ? AND r.universe = ?
      ORDER BY r.ranking_date ASC, r.rank_overall ASC'
 );
-$simStmt->execute([$simStartDate]);
+$simStmt->execute([$simStartDate, $universe]);
 $simByDate = [];
 foreach ($simStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
     $simByDate[$row['ranking_date']][] = $row;
@@ -50,11 +56,12 @@ foreach ($simSundays as $i => $sunday) {
 
     $saleProceeds = [];
 
-    // VERKAUF: Rang > 125 oder nicht mehr im Index
+    // VERKAUF: Rang > Schwelle oder nicht mehr im Index
+    $holdRank = $isDax ? ($sunday >= '2021-09-20' ? 10 : 7) : 125;
     foreach (array_keys($simHoldings) as $ticker) {
         $rank = isset($rankByTicker[$ticker])
             ? (int)$rankByTicker[$ticker]['rank_overall'] : PHP_INT_MAX;
-        if ($rank > 125) {
+        if ($rank > $holdRank) {
             $price = (float)($rankByTicker[$ticker]['current_price'] ?? $simHoldings[$ticker]['buy_price']);
             $net   = $simHoldings[$ticker]['shares'] * $price;
             $simCash += $net;
@@ -142,7 +149,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RSL nach Levy — S&P 500 Dashboard</title>
+<title>RSL nach Levy — <?= $isDax ? 'DAX' : 'S&P 500' ?> Dashboard</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
 <style>
@@ -197,27 +204,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
 <body>
 
 <!-- Navbar -->
-<nav class="navbar navbar-expand-lg navbar-dark">
-  <div class="container-fluid px-4">
-    <a class="navbar-brand fw-bold" href="index.php"><i class="bi bi-graph-up-arrow text-success me-2"></i>RSL nach Levy</a>
-    <button class="navbar-toggler border-0" type="button" data-bs-toggle="collapse" data-bs-target="#navMain" aria-controls="navMain" aria-expanded="false">
-      <span class="navbar-toggler-icon"></span>
-    </button>
-    <div class="collapse navbar-collapse" id="navMain">
-      <div class="navbar-nav ms-auto">
-        <a class="nav-link" href="landing.php"><i class="bi bi-house me-1"></i>Start</a>
-        <a class="nav-link active" href="index.php"><i class="bi bi-speedometer2 me-1"></i>Dashboard</a>
-        <a class="nav-link" href="simulation.php"><i class="bi bi-sliders me-1"></i>Annahmen</a>
-        <a class="nav-link" href="ranking.php"><i class="bi bi-list-ol me-1"></i>Ranking</a>
-        <a class="nav-link" href="backtest.php"><i class="bi bi-clock-history me-1"></i>Backtest</a>
-      </div>
-      <div class="currency-toggle ms-lg-3 mt-2 mt-lg-0 mb-2 mb-lg-0">
-        <button class="cur-btn" id="btn-usd">$ USD</button>
-        <button class="cur-btn" id="btn-eur">€ EUR</button>
-      </div>
-    </div>
-  </div>
-</nav>
+<?php $activePage = 'index'; include __DIR__ . '/inc_navbar.php'; ?>
 
 <div class="container-fluid px-4 py-4">
 
@@ -332,7 +319,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
 </div>
 
 <footer class="container-fluid px-4 text-center">
-  RSL nach Levy — S&P 500 Momentum-System &nbsp;|&nbsp;
+  RSL nach Levy — <?= $isDax ? 'DAX' : 'S&P 500' ?> Momentum-System &nbsp;|&nbsp;
   Powered by Apache + MariaDB + PHP 8.2 &nbsp;|&nbsp;
   Daten: Yahoo Finance &nbsp;|&nbsp;
   <small>Kein Anlageberater — nur zu Informationszwecken</small>
@@ -351,18 +338,14 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
   const needStart   = simStart   && simStart   !== urlStart;
   const needCap     = simCapSaved && simCapSaved !== urlCap;
   if (needStart || needCap) {
-    const s = simStart    || urlStart    || '2024-01-01';
-    const c = simCapSaved || urlCap      || '50000';
-    window.location.replace('index.php?start_date=' + encodeURIComponent(s) + '&capital=' + encodeURIComponent(c));
+    const s   = simStart    || urlStart    || '2024-01-01';
+    const c   = simCapSaved || urlCap      || '50000';
+    const univ = params.get('universe') || localStorage.getItem('universe') || 'sp500';
+    window.location.replace('index.php?start_date=' + encodeURIComponent(s) + '&capital=' + encodeURIComponent(c) + '&universe=' + encodeURIComponent(univ));
     return;
   }
 
-  // Currency toggle init
-  const _currency = localStorage.getItem('currency') || 'USD';
-  document.getElementById('btn-usd')?.classList.toggle('active', _currency === 'USD');
-  document.getElementById('btn-eur')?.classList.toggle('active', _currency === 'EUR');
-  document.getElementById('btn-usd')?.addEventListener('click', () => { localStorage.setItem('currency', 'USD'); location.reload(); });
-  document.getElementById('btn-eur')?.addEventListener('click', () => { localStorage.setItem('currency', 'EUR'); location.reload(); });
+  // Currency toggle init (Navbar übernimmt die Buttons, hier nur noch die Variable lesen)
 
   const currentEurUsd = <?= round($currentEurUsd, 6) ?>;
 

@@ -3,6 +3,11 @@ require_once __DIR__ . '/../config/database.php';
 
 $db = getDB();
 
+// ── Universe ───────────────────────────────────────────────────────────────
+$universe = $_GET['universe'] ?? 'sp500';
+if (!in_array($universe, ['sp500', 'dax'])) $universe = 'sp500';
+$isDax    = ($universe === 'dax');
+
 // ── M&A-Flags (aktuell aktive Übernahme-Kandidaten) ────────────────────────
 $maFlagged = [];
 foreach ($db->query('SELECT ticker, headline FROM m_and_a_flags WHERE is_active = 1')
@@ -14,7 +19,7 @@ foreach ($db->query('SELECT ticker, headline FROM m_and_a_flags WHERE is_active 
 $startCapital = max(1000, (float)($_GET['capital'] ?? 50000));
 $startDate    = $_GET['start_date'] ?? '2024-01-01';
 $minDate      = '2010-01-04';
-$maxDate      = $db->query('SELECT MAX(ranking_date) FROM rsl_rankings')->fetchColumn() ?: date('Y-m-d');
+$maxDate      = $db->query("SELECT MAX(ranking_date) FROM rsl_rankings WHERE universe='$universe'")->fetchColumn() ?: date('Y-m-d');
 if ($startDate < $minDate) $startDate = $minDate;
 if ($startDate > $maxDate) $startDate = $maxDate;
 
@@ -39,10 +44,10 @@ $stmt = $db->prepare(
             COALESCE(s.name, r.ticker) AS company
      FROM rsl_rankings r
      LEFT JOIN stocks s ON s.ticker = r.ticker
-     WHERE r.ranking_date >= ?
+     WHERE r.ranking_date >= ? AND r.universe = ?
      ORDER BY r.ranking_date ASC, r.rank_overall ASC'
 );
-$stmt->execute([$startDate]);
+$stmt->execute([$startDate, $universe]);
 $allRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Nach Datum gruppieren
@@ -53,7 +58,7 @@ foreach ($allRows as $row) {
 $sundays = array_keys($byDate);
 
 // ── Simulation (identische Logik wie Backtest) ─────────────────────────────
-const HOLD_RANK = 125;
+// HOLD_RANK: dynamisch je nach Universe und Datum (wird im Loop neu berechnet)
 const TOP_N_SIM = 5;
 
 $cash                = $startCapital;
@@ -68,12 +73,13 @@ foreach ($sundays as $i => $sunday) {
     $saleProceeds   = [];
     $exitedThisWeek = [];  // ticker → ['net_proceeds', 'realized_pnl']
 
-    // VERKAUF: Rang > 125 oder nicht mehr im Index
+    // VERKAUF: Rang > Schwelle oder nicht mehr im Index
+    $holdRank = $isDax ? ($sunday >= '2021-09-20' ? 10 : 7) : 125;
     foreach (array_keys($holdings) as $ticker) {
         $rank = isset($rankByTicker[$ticker])
             ? (int)$rankByTicker[$ticker]['rank_overall']
             : PHP_INT_MAX;
-        if ($rank > HOLD_RANK) {
+        if ($rank > $holdRank) {
             $price  = (float)($rankByTicker[$ticker]['current_price'] ?? $holdings[$ticker]['buy_price']);
             $shares = $holdings[$ticker]['shares'];
             $gross  = $shares * $price;
@@ -264,27 +270,7 @@ $endEurUsd   = (float)($stmtEur->fetchColumn() ?: $currentEurUsd);
 </style>
 </head>
 <body>
-<nav class="navbar navbar-expand-lg navbar-dark">
-  <div class="container-fluid px-4">
-    <a class="navbar-brand fw-bold" href="index.php"><i class="bi bi-graph-up-arrow text-success me-2"></i>RSL nach Levy</a>
-    <button class="navbar-toggler border-0" type="button" data-bs-toggle="collapse" data-bs-target="#navMain" aria-controls="navMain" aria-expanded="false">
-      <span class="navbar-toggler-icon"></span>
-    </button>
-    <div class="collapse navbar-collapse" id="navMain">
-      <div class="navbar-nav ms-auto">
-        <a class="nav-link" href="landing.php"><i class="bi bi-house me-1"></i>Start</a>
-        <a class="nav-link" href="index.php"><i class="bi bi-speedometer2 me-1"></i>Dashboard</a>
-        <a class="nav-link active" href="simulation.php"><i class="bi bi-sliders me-1"></i>Annahmen</a>
-        <a class="nav-link" href="ranking.php"><i class="bi bi-list-ol me-1"></i>Ranking</a>
-        <a class="nav-link" href="backtest.php?start_date=<?= htmlspecialchars($startDate) ?>&capital=<?= (int)$startCapital ?>"><i class="bi bi-clock-history me-1"></i>Backtest</a>
-      </div>
-      <div class="currency-toggle ms-lg-3 mt-2 mt-lg-0 mb-2 mb-lg-0">
-        <button class="cur-btn" id="btn-usd">$ USD</button>
-        <button class="cur-btn" id="btn-eur">€ EUR</button>
-      </div>
-    </div>
-  </div>
-</nav>
+<?php $activePage = 'simulation'; include __DIR__ . '/inc_navbar.php'; ?>
 
 <div class="container-fluid px-4 py-4">
   <div class="row g-4 align-items-start">
@@ -299,6 +285,7 @@ $endEurUsd   = (float)($stmtEur->fetchColumn() ?: $currentEurUsd);
           </div>
           <div class="card-body p-3">
             <form method="get" action="simulation.php">
+              <input type="hidden" name="universe" value="<?= htmlspecialchars($universe) ?>">
               <input type="hidden" name="capital" id="inputCapital"
                      value="<?= number_format($startCapital, 0, '.', '') ?>">
 
@@ -660,7 +647,7 @@ if (_currency === 'EUR') {
   sliderDate.addEventListener('change', saveAndSubmit);
 
   // Aktuelle Portfolio-Ticker in localStorage speichern (für Ranking-Seite)
-  localStorage.setItem('sim_portfolio_tickers', JSON.stringify(<?= json_encode(array_keys($holdings)) ?>));
+  localStorage.setItem('sim_portfolio_tickers_<?= $universe ?>', JSON.stringify(<?= json_encode(array_keys($holdings)) ?>));
 })();
 </script>
 </body>

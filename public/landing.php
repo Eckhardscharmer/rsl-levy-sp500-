@@ -2,11 +2,16 @@
 require_once __DIR__ . '/../src/RSLEngine.php';
 $rsl = new RSLEngine();
 $db  = getDB();
-$top5 = $rsl->getCurrentTop5();
+
+$universe = $_GET['universe'] ?? 'sp500';
+if (!in_array($universe, ['sp500', 'dax'])) $universe = 'sp500';
+$isDax    = ($universe === 'dax');
+
+$top5 = $rsl->getCurrentTop5(null, $universe);
 
 // ── Start-Datum (via GET, gesetzt vom JS-Redirect) ─────────────────────────
 $minDate   = '2010-01-04';
-$maxDate   = $db->query('SELECT MAX(ranking_date) FROM rsl_rankings')->fetchColumn() ?: date('Y-m-d');
+$maxDate   = $db->query("SELECT MAX(ranking_date) FROM rsl_rankings WHERE universe='$universe'")->fetchColumn() ?: date('Y-m-d');
 $startDate = $_GET['start_date'] ?? $minDate;
 if ($startDate < $minDate) $startDate = $minDate;
 if ($startDate > $maxDate) $startDate = $maxDate;
@@ -392,27 +397,7 @@ if ($hasData) {
 <!-- ═══════════════════════════════════════════════════════════════
      HERO
 ════════════════════════════════════════════════════════════════ -->
-<nav class="navbar navbar-expand-lg navbar-dark landing-nav">
-  <div class="container-fluid px-4">
-    <a class="navbar-brand fw-bold" href="index.php"><i class="bi bi-graph-up-arrow text-success me-2"></i>RSL nach Levy</a>
-    <button class="navbar-toggler border-0" type="button" data-bs-toggle="collapse" data-bs-target="#navMain" aria-controls="navMain" aria-expanded="false">
-      <span class="navbar-toggler-icon"></span>
-    </button>
-    <div class="collapse navbar-collapse" id="navMain">
-      <div class="navbar-nav ms-auto">
-        <a class="nav-link active" href="landing.php"><i class="bi bi-house me-1"></i>Start</a>
-        <a class="nav-link" href="index.php"><i class="bi bi-speedometer2 me-1"></i>Dashboard</a>
-        <a class="nav-link" href="simulation.php"><i class="bi bi-sliders me-1"></i>Annahmen</a>
-        <a class="nav-link" href="ranking.php"><i class="bi bi-list-ol me-1"></i>Ranking</a>
-        <a class="nav-link" href="backtest.php"><i class="bi bi-clock-history me-1"></i>Backtest</a>
-      </div>
-      <div class="currency-toggle ms-lg-3 mt-2 mt-lg-0 mb-2 mb-lg-0">
-        <button class="cur-btn" id="btn-usd">$ USD</button>
-        <button class="cur-btn" id="btn-eur">€ EUR</button>
-      </div>
-    </div>
-  </div>
-</nav>
+<?php $activePage = 'landing'; include __DIR__ . '/inc_navbar.php'; ?>
 
 <section class="hero">
   <div class="container px-4 py-5">

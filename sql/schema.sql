@@ -8,7 +8,7 @@ USE rsl_system;
 -- STAMMDATEN
 -- ============================================================
 
--- Aktien-Stammdaten (alle S&P 500 Mitglieder, historisch + aktuell)
+-- Aktien-Stammdaten (alle S&P 500 / DAX-Mitglieder, historisch + aktuell)
 CREATE TABLE IF NOT EXISTS stocks (
     id            INT AUTO_INCREMENT PRIMARY KEY,
     ticker        VARCHAR(20)  NOT NULL UNIQUE,
@@ -16,13 +16,28 @@ CREATE TABLE IF NOT EXISTS stocks (
     sector        VARCHAR(100) COMMENT 'GICS Sektor',
     industry      VARCHAR(150) COMMENT 'GICS Industrie',
     cik           VARCHAR(20)  COMMENT 'SEC CIK-Nummer',
+    universe      VARCHAR(10)  NOT NULL DEFAULT 'sp500' COMMENT 'sp500 oder dax',
     created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_sector (sector)
+    INDEX idx_sector (sector),
+    INDEX idx_universe (universe)
 ) ENGINE=InnoDB;
 
 -- Historische S&P 500-Zusammensetzung (kein Survivorship Bias)
 CREATE TABLE IF NOT EXISTS sp500_membership (
+    id            INT AUTO_INCREMENT PRIMARY KEY,
+    ticker        VARCHAR(20) NOT NULL,
+    date_added    DATE        NOT NULL,
+    date_removed  DATE        NULL COMMENT 'NULL = aktuell Mitglied',
+    reason_added  VARCHAR(255),
+    reason_removed VARCHAR(255),
+    INDEX idx_ticker      (ticker),
+    INDEX idx_date_added  (date_added),
+    INDEX idx_date_removed (date_removed)
+) ENGINE=InnoDB;
+
+-- Historische DAX-Zusammensetzung (kein Survivorship Bias)
+CREATE TABLE IF NOT EXISTS dax_membership (
     id            INT AUTO_INCREMENT PRIMARY KEY,
     ticker        VARCHAR(20) NOT NULL,
     date_added    DATE        NOT NULL,
@@ -80,14 +95,16 @@ CREATE TABLE IF NOT EXISTS rsl_rankings (
     current_price   DECIMAL(14,4)  NOT NULL,
     sma_26w         DECIMAL(14,4)  NOT NULL COMMENT 'SMA über 182 Tage',
     rsl             DECIMAL(10,6)  NOT NULL COMMENT 'current_price / sma_26w',
-    rank_overall    SMALLINT UNSIGNED COMMENT 'Rang im gesamten S&P 500',
+    rank_overall    SMALLINT UNSIGNED COMMENT 'Rang im gesamten Index',
     rank_in_sector  SMALLINT UNSIGNED COMMENT 'Rang innerhalb des Sektors',
     is_sp500_member TINYINT(1) DEFAULT 1,
     is_selected     TINYINT(1) DEFAULT 0 COMMENT '1 = in den Top-5 ausgewählt',
-    UNIQUE KEY uk_date_ticker (ranking_date, ticker),
+    universe        VARCHAR(10) NOT NULL DEFAULT 'sp500' COMMENT 'sp500 oder dax',
+    UNIQUE KEY uk_date_ticker_universe (ranking_date, ticker, universe),
     INDEX idx_date       (ranking_date),
+    INDEX idx_universe   (universe),
     INDEX idx_rsl        (rsl DESC),
-    INDEX idx_selected   (ranking_date, is_selected)
+    INDEX idx_selected   (ranking_date, is_selected, universe)
 ) ENGINE=InnoDB;
 
 -- ============================================================

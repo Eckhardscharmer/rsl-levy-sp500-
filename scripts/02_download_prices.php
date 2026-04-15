@@ -2,12 +2,14 @@
 <?php
 /**
  * Sprint 2 — Yahoo Finance Downloader
- * Lädt Tagespreise für alle S&P 500-Aktien via Yahoo Finance JSON API
+ * Lädt Tagespreise für alle S&P 500- und/oder DAX-Aktien via Yahoo Finance JSON API
  *
  * Aufruf:
- *   php scripts/02_download_prices.php              # alle Aktien
- *   php scripts/02_download_prices.php AAPL MSFT    # nur bestimmte Ticker
- *   php scripts/02_download_prices.php --update     # nur fehlende Tage nachtragen
+ *   php scripts/02_download_prices.php                   # alle S&P 500-Aktien
+ *   php scripts/02_download_prices.php --universe=dax    # nur DAX-Aktien
+ *   php scripts/02_download_prices.php --universe=all    # alle Aktien
+ *   php scripts/02_download_prices.php AAPL MSFT         # nur bestimmte Ticker
+ *   php scripts/02_download_prices.php --update          # nur fehlende Tage nachtragen
  */
 
 chdir(dirname(__DIR__));
@@ -24,7 +26,11 @@ $MAX_RETRIES  = 3;
 $args        = array_slice($argv, 1);
 $updateOnly  = in_array('--update',   $args);
 $backfill    = in_array('--backfill', $args);
-$tickerArgs  = array_filter($args, fn($a) => !in_array($a, ['--update', '--backfill']));
+$universe    = 'sp500';
+foreach ($args as $a) {
+    if (preg_match('/^--universe=(.+)$/', $a, $m)) $universe = $m[1];
+}
+$tickerArgs  = array_filter($args, fn($a) => !preg_match('/^--(update|backfill|universe)/', $a));
 
 $modeLabel = $backfill ? 'Backfill (nur fehlende Historie)' : ($updateOnly ? 'Update (nur fehlende Tage)' : 'Vollständig');
 echo "=== Yahoo Finance Downloader ===\n";
@@ -36,9 +42,17 @@ $db = getDB();
 // Ticker-Liste bestimmen
 if (!empty($tickerArgs)) {
     $tickers = array_values($tickerArgs);
-} else {
+} elseif ($universe === 'all') {
     $tickers = $db->query('SELECT ticker FROM stocks ORDER BY ticker')->fetchAll(PDO::FETCH_COLUMN);
+} elseif ($universe === 'dax') {
+    $tickers = $db->query("SELECT ticker FROM stocks WHERE universe='dax' ORDER BY ticker")->fetchAll(PDO::FETCH_COLUMN);
+    // DAX-Benchmark dazu
+    $tickers[] = '^GDAXI';
+} else {
+    // Standard: S&P 500
+    $tickers = $db->query("SELECT ticker FROM stocks WHERE universe='sp500' ORDER BY ticker")->fetchAll(PDO::FETCH_COLUMN);
 }
+echo "Universe: $universe\n";
 
 echo "Ticker zu verarbeiten: " . count($tickers) . "\n\n";
 

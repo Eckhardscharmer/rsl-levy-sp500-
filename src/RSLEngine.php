@@ -15,15 +15,17 @@ class RSLEngine {
     }
 
     /** Aktuellstes Ranking-Datum (letzter Sonntag mit Daten) */
-    public function getLatestRankingDate(): ?string {
-        return $this->db->query(
-            'SELECT MAX(ranking_date) FROM rsl_rankings'
-        )->fetchColumn() ?: null;
+    public function getLatestRankingDate(string $universe = 'sp500'): ?string {
+        $stmt = $this->db->prepare(
+            'SELECT MAX(ranking_date) FROM rsl_rankings WHERE universe = ?'
+        );
+        $stmt->execute([$universe]);
+        return $stmt->fetchColumn() ?: null;
     }
 
     /** Aktuelles Top-5 Portfolio-Vorschlag */
-    public function getCurrentTop5(string $date = null): array {
-        $date = $date ?? $this->getLatestRankingDate();
+    public function getCurrentTop5(string $date = null, string $universe = 'sp500'): array {
+        $date = $date ?? $this->getLatestRankingDate($universe);
         if (!$date) return [];
 
         $stmt = $this->db->prepare(
@@ -31,16 +33,16 @@ class RSLEngine {
                     r.rsl, r.rank_overall
              FROM rsl_rankings r
              LEFT JOIN stocks s ON s.ticker = r.ticker
-             WHERE r.ranking_date = ? AND r.is_selected = 1
+             WHERE r.ranking_date = ? AND r.is_selected = 1 AND r.universe = ?
              ORDER BY r.rsl DESC'
         );
-        $stmt->execute([$date]);
+        $stmt->execute([$date, $universe]);
         return $stmt->fetchAll();
     }
 
     /** Vollständiges Ranking für ein Datum */
-    public function getFullRanking(string $date = null, int $limit = 50): array {
-        $date = $date ?? $this->getLatestRankingDate();
+    public function getFullRanking(string $date = null, int $limit = 50, string $universe = 'sp500'): array {
+        $date = $date ?? $this->getLatestRankingDate($universe);
         if (!$date) return [];
 
         $stmt = $this->db->prepare(
@@ -48,11 +50,11 @@ class RSLEngine {
                     r.rsl, r.rank_overall, r.rank_in_sector, r.is_selected
              FROM rsl_rankings r
              LEFT JOIN stocks s ON s.ticker = r.ticker
-             WHERE r.ranking_date = ?
+             WHERE r.ranking_date = ? AND r.universe = ?
              ORDER BY r.rsl DESC
              LIMIT ?'
         );
-        $stmt->execute([$date, $limit]);
+        $stmt->execute([$date, $universe, $limit]);
         return $stmt->fetchAll();
     }
 

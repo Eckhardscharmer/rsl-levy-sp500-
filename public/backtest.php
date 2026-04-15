@@ -2,15 +2,20 @@
 require_once __DIR__ . '/../config/database.php';
 $db = getDB();
 
+// ── Universe ───────────────────────────────────────────────────────────────
+$universe = $_GET['universe'] ?? 'sp500';
+if (!in_array($universe, ['sp500', 'dax'])) $universe = 'sp500';
+$isDax    = ($universe === 'dax');
+
 // ── Parameter (via GET, gesetzt vom JS-Redirect) ───────────────────────────
 $minDate      = '2010-01-04';
-$maxDate      = $db->query('SELECT MAX(ranking_date) FROM rsl_rankings')->fetchColumn() ?: date('Y-m-d');
+$maxDate      = $db->query("SELECT MAX(ranking_date) FROM rsl_rankings WHERE universe='$universe'")->fetchColumn() ?: date('Y-m-d');
 $startDate    = $_GET['start_date'] ?? $minDate;
 $startCapital = max(1000, (float)($_GET['capital'] ?? 100000));
 if ($startDate < $minDate) $startDate = $minDate;
 if ($startDate > $maxDate) $startDate = $maxDate;
 
-$hasData  = (bool)$db->query('SELECT COUNT(*) FROM rsl_rankings LIMIT 1')->fetchColumn();
+$hasData  = (bool)$db->query("SELECT COUNT(*) FROM rsl_rankings WHERE universe='$universe' LIMIT 1")->fetchColumn();
 $numBuys  = 0;
 $endDate  = date('Y-m-d');
 $chartDates = $chartPortfolio = $chartBenchmark = $allBuyDatesJson = 'null';
@@ -27,10 +32,10 @@ if ($hasData) {
     $stmt = $db->prepare(
         'SELECT r.ranking_date, r.ticker, r.sector, r.current_price, r.rsl, r.rank_overall
          FROM rsl_rankings r
-         WHERE r.ranking_date >= ?
+         WHERE r.ranking_date >= ? AND r.universe = ?
          ORDER BY r.ranking_date ASC, r.rank_overall ASC'
     );
-    $stmt->execute([$startDate]);
+    $stmt->execute([$startDate, $universe]);
     $byDate = [];
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
         $byDate[$row['ranking_date']][] = $row;
@@ -51,10 +56,11 @@ if ($hasData) {
         $saleProceeds = [];
 
         // VERKAUF
+        $holdRank = $isDax ? ($sunday >= '2021-09-20' ? 10 : 7) : 125;
         foreach (array_keys($holdings) as $ticker) {
             $rank = isset($rankByTicker[$ticker])
                 ? (int)$rankByTicker[$ticker]['rank_overall'] : PHP_INT_MAX;
-            if ($rank > 125) {
+            if ($rank > $holdRank) {
                 $price = (float)($rankByTicker[$ticker]['current_price'] ?? $holdings[$ticker]['buy_price']);
                 $net   = $holdings[$ticker]['shares'] * $price;
                 $cash += $net;
@@ -189,27 +195,7 @@ if ($hasData) {
 </style>
 </head>
 <body>
-<nav class="navbar navbar-expand-lg navbar-dark">
-  <div class="container-fluid px-4">
-    <a class="navbar-brand fw-bold" href="index.php"><i class="bi bi-graph-up-arrow text-success me-2"></i>RSL nach Levy</a>
-    <button class="navbar-toggler border-0" type="button" data-bs-toggle="collapse" data-bs-target="#navMain" aria-controls="navMain" aria-expanded="false">
-      <span class="navbar-toggler-icon"></span>
-    </button>
-    <div class="collapse navbar-collapse" id="navMain">
-      <div class="navbar-nav ms-auto">
-        <a class="nav-link" href="landing.php"><i class="bi bi-house me-1"></i>Start</a>
-        <a class="nav-link" href="index.php"><i class="bi bi-speedometer2 me-1"></i>Dashboard</a>
-        <a class="nav-link" href="simulation.php"><i class="bi bi-sliders me-1"></i>Annahmen</a>
-        <a class="nav-link" href="ranking.php"><i class="bi bi-list-ol me-1"></i>Ranking</a>
-        <a class="nav-link active" href="backtest.php"><i class="bi bi-clock-history me-1"></i>Backtest</a>
-      </div>
-      <div class="currency-toggle ms-lg-3 mt-2 mt-lg-0 mb-2 mb-lg-0">
-        <button class="cur-btn" id="btn-usd">$ USD</button>
-        <button class="cur-btn" id="btn-eur">€ EUR</button>
-      </div>
-    </div>
-  </div>
-</nav>
+<?php $activePage = 'backtest'; include __DIR__ . '/inc_navbar.php'; ?>
 
 <div class="container-fluid px-4 py-4">
   <h4 class="mb-4">Backtest — RSL Top-5 (wöchentlich)</h4>

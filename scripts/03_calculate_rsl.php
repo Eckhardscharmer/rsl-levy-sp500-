@@ -5,9 +5,10 @@
  * Berechnet wöchentliche RSL-Rankings mit Sektor-Diversifikation (Top 5, je ein Sektor)
  *
  * Aufruf:
- *   php scripts/03_calculate_rsl.php              # alle Sonntage seit Backtest-Start
- *   php scripts/03_calculate_rsl.php 2024-01-07   # ab bestimmtem Datum
- *   php scripts/03_calculate_rsl.php --latest     # nur letzten Sonntag
+ *   php scripts/03_calculate_rsl.php                     # S&P 500, alle Sonntage
+ *   php scripts/03_calculate_rsl.php --universe=dax      # DAX, alle Sonntage
+ *   php scripts/03_calculate_rsl.php 2024-01-07          # ab bestimmtem Datum
+ *   php scripts/03_calculate_rsl.php --latest            # nur letzten Sonntag
  */
 
 chdir(dirname(__DIR__));
@@ -19,6 +20,11 @@ define('MIN_DATA',   100);   // Mindest-Handelstage für validen SMA (~20 Wochen
 
 $args        = array_slice($argv, 1);
 $latestOnly  = in_array('--latest', $args);
+$universe    = 'sp500';
+foreach ($args as $a) {
+    if (preg_match('/^--universe=(.+)$/', $a, $m)) $universe = $m[1];
+}
+if (!in_array($universe, ['sp500', 'dax'])) $universe = 'sp500';
 $dateArg     = array_values(array_filter($args, fn($a) => preg_match('/^\d{4}-\d{2}-\d{2}$/', $a)))[0] ?? null;
 
 $db = getDB();
@@ -32,20 +38,21 @@ if ($latestOnly) {
 }
 
 echo "=== RSL Engine ===\n";
+echo "Universe: " . strtoupper($universe) . "\n";
 echo "Berechne " . count($sundays) . " Sonntage (SMA = " . SMA_DAYS . " Tage, Top " . TOP_N . " mit Sektor-Diversifikation)\n\n";
 
 $stmtInsert = $db->prepare(
     'INSERT INTO rsl_rankings
        (ranking_date, ticker, sector, current_price, sma_26w, rsl,
-        rank_overall, rank_in_sector, is_sp500_member, is_selected)
+        rank_overall, rank_in_sector, is_sp500_member, is_selected, universe)
      VALUES
        (:date, :ticker, :sector, :price, :sma, :rsl,
-        :rank_overall, :rank_sector, 1, :selected)
+        :rank_overall, :rank_sector, 1, :selected, :universe)
      ON DUPLICATE KEY UPDATE
        sector=VALUES(sector), current_price=VALUES(current_price),
        sma_26w=VALUES(sma_26w), rsl=VALUES(rsl),
        rank_overall=VALUES(rank_overall), rank_in_sector=VALUES(rank_in_sector),
-       is_selected=VALUES(is_selected)'
+       is_selected=VALUES(is_selected), universe=VALUES(universe)'
 );
 
 // Aktive M&A-Flags laden (nur für aktuellen Lauf relevant)
@@ -64,15 +71,17 @@ if (!empty($maFlagged)) {
 $membershipCache = [];
 
 foreach ($sundays as $idx => $sunday) {
-    // S&P 500-Mitglieder an diesem Datum
-    $members = getSP500Members($db, $sunday, $membershipCache);
+    // Index-Mitglieder an diesem Datum
+    $members = $universe === 'dax'
+        ? getDAXMembers($db, $sunday, $membershipCache)
+        : getSP500Members($db, $sunday, $membershipCache);
     if (empty($members)) {
         echo "[$sunday] Keine Mitglieder gefunden, überspringe.\n";
         continue;
     }
 
     // Kursdaten: letzter Handelstag <= Sonntag + SMA-Periode davor
-    $latestDay = getLastTradingDay($db, $sunday);
+    $latestDay = getLastTradingDay($db, $sunday, $universe);
     if (!$latestDay) {
         echo "[$sunday] Kein Handelstag gefunden.\n";
         continue;
@@ -128,6 +137,7 @@ foreach ($sundays as $idx => $sunday) {
             ':rank_overall' => $r['rank_overall'],
             ':rank_sector'  => $r['rank_sector'],
             ':selected'     => isset($selectedSet[$r['ticker']]) ? 1 : 0,
+            ':universe'     => $universe,
         ]);
     }
     $db->commit();
@@ -218,11 +228,36 @@ function getSP500Members(PDO $db, string $date, array &$cache): array {
     return $result;
 }
 
-function getLastTradingDay(PDO $db, string $refDate): ?string {
+function getDAXMembers(PDO $db, string $date, array &$cache): array
+{
+    if (isset($cache['dax_' . $date])) return $cache['dax_' . $date];
+
     $stmt = $db->prepare(
-        'SELECT MAX(price_date) FROM prices WHERE price_date <= ? AND ticker = "SPY"'
+        'SELECT s.ticker, COALESCE(s.sector, "Unknown") as sector
+         FROM dax_membership m
+         JOIN stocks s ON s.ticker = m.ticker
+         WHERE m.date_added <= :date
+           AND (m.date_removed IS NULL OR m.date_removed > :date2)
+         GROUP BY s.ticker'
     );
-    $stmt->execute([$refDate]);
+    $stmt->execute([':date' => $date, ':date2' => $date]);
+    $rows = $stmt->fetchAll();
+
+    $result = [];
+    foreach ($rows as $r) {
+        $result[$r['ticker']] = $r['sector'];
+    }
+    $cache['dax_' . $date] = $result;
+    return $result;
+}
+
+function getLastTradingDay(PDO $db, string $refDate, string $universe = 'sp500'): ?string {
+    // Referenz-Ticker je nach Universe
+    $refTicker = $universe === 'dax' ? 'SAP.DE' : 'SPY';
+    $stmt = $db->prepare(
+        'SELECT MAX(price_date) FROM prices WHERE price_date <= ? AND ticker = ?'
+    );
+    $stmt->execute([$refDate, $refTicker]);
     $result = $stmt->fetchColumn();
     if ($result) return $result;
 
