@@ -109,8 +109,8 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
             <th style="width:80px">Ticker</th>
             <th>Name</th>
             <th>Sektor</th>
-            <th class="text-end" id="th-kurs">Kurs (USD)</th>
-            <th class="text-end" id="th-sma">SMA 26W (USD)</th>
+            <th class="text-end" id="th-kurs">Kurs (<?= $isDax ? 'EUR' : 'USD' ?>)</th>
+            <th class="text-end" id="th-sma">SMA 26W (<?= $isDax ? 'EUR' : 'USD' ?>)</th>
             <th class="text-end" style="width:180px">RSL</th>
           </tr>
         </thead>
@@ -157,14 +157,16 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 // Currency toggle
-const _currency    = localStorage.getItem('currency') || 'USD';
+const _isDax       = <?= $isDax ? 'true' : 'false' ?>;
+const _currency    = _isDax ? 'EUR' : (localStorage.getItem('currency') || 'USD');
 const currentEurUsd = <?= round($currentEurUsd, 6) ?>;
 document.getElementById('btn-usd')?.classList.toggle('active', _currency === 'USD');
 document.getElementById('btn-eur')?.classList.toggle('active', _currency === 'EUR');
 document.getElementById('btn-usd')?.addEventListener('click', () => { localStorage.setItem('currency', 'USD'); location.reload(); });
 document.getElementById('btn-eur')?.addEventListener('click', () => { localStorage.setItem('currency', 'EUR'); location.reload(); });
 
-if (_currency === 'EUR') {
+// S&P 500 mit EUR-Anzeige: USD-Kurse umrechnen
+if (!_isDax && _currency === 'EUR') {
   const thKurs = document.getElementById('th-kurs'); if (thKurs) thKurs.textContent = 'Kurs (EUR)';
   const thSma  = document.getElementById('th-sma');  if (thSma)  thSma.textContent  = 'SMA 26W (EUR)';
   document.querySelectorAll('.price-cell').forEach(el => {
