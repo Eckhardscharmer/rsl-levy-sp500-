@@ -14,6 +14,7 @@ $universe     = $universe ?? 'sp500';
 $activePage   = $activePage ?? '';
 $eurUsd       = $currentEurUsd ?? 1.10;
 $isDax        = ($universe === 'dax');
+$isEtf        = ($universe === 'etf');
 
 // URL-Parameter für alle Links (universe wird immer mitgegeben)
 function navUrl(string $page, string $universe, array $extra = []): string {
@@ -28,6 +29,7 @@ function navUrl(string $page, string $universe, array $extra = []): string {
   .univ-btn.active { color: #fff; box-shadow: 0 0 0 2px rgba(255,255,255,.25); }
   .univ-btn.sp500.active { background: #1d4ed8; }
   .univ-btn.dax.active   { background: #b91c1c; }
+  .univ-btn.etf.active   { background: #065f46; }
   .currency-toggle { background: rgba(255,255,255,.1); border-radius: 20px; padding: 2px; display: flex; align-items: center; width: 100%; }
   .cur-btn { background: transparent; border: none; color: rgba(255,255,255,.45); font-size: .75rem; font-weight: 700; padding: .2rem .65rem; border-radius: 18px; cursor: pointer; transition: all .15s; line-height: 1.6; }
   .cur-btn.active { background: #2563eb; color: #fff; box-shadow: 0 0 0 2px rgba(37,99,235,.4); }
@@ -43,14 +45,17 @@ function navUrl(string $page, string $universe, array $extra = []): string {
     <!-- Schalter: direkt neben Brand, immer sichtbar, schiebt Navlinks nach rechts -->
     <div class="d-flex flex-column align-items-stretch gap-1 ms-3 me-auto">
       <div class="universe-toggle">
-        <button class="univ-btn sp500 <?= !$isDax ? 'active' : '' ?>" onclick="switchUniverse('sp500')" title="S&P 500 — US-Aktien">
+        <button class="univ-btn sp500 <?= (!$isDax && !$isEtf) ? 'active' : '' ?>" onclick="switchUniverse('sp500')" title="S&P 500 — US-Aktien">
           <span class="flag-icon">🇺🇸</span> S&amp;P 500
         </button>
         <button class="univ-btn dax <?= $isDax ? 'active' : '' ?>" onclick="switchUniverse('dax')" title="DAX — Deutsche Aktien">
           <span class="flag-icon">🇩🇪</span> DAX
         </button>
+        <button class="univ-btn etf <?= $isEtf ? 'active' : '' ?>" onclick="switchUniverse('etf')" title="ETF — Multi-Asset Momentum">
+          <span class="flag-icon">🌐</span> ETF
+        </button>
       </div>
-      <?php if (!$isDax): ?>
+      <?php if (!$isDax && !$isEtf): ?>
       <div class="currency-toggle">
         <button class="cur-btn" id="btn-usd" style="flex:1;">$ USD</button>
         <button class="cur-btn" id="btn-eur" style="flex:1;">€ EUR</button>

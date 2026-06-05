@@ -5,8 +5,9 @@ $db  = getDB();
 
 // ── Universe ───────────────────────────────────────────────────────────────
 $universe = $_GET['universe'] ?? 'sp500';
-if (!in_array($universe, ['sp500', 'dax'])) $universe = 'sp500';
+if (!in_array($universe, ['sp500', 'dax', 'etf'])) $universe = 'sp500';
 $isDax    = ($universe === 'dax');
+$isEtf    = ($universe === 'etf');
 
 $latestDate = $rsl->getLatestRankingDate($universe);
 $hasData    = !empty($latestDate);
@@ -19,17 +20,17 @@ foreach ($db->query('SELECT ticker FROM m_and_a_flags WHERE is_active = 1')
 }
 
 // ── Simulation ab Nutzer-Startdatum (identische Logik wie simulation.php) ──
-$minDate      = '2010-01-04';
+$minDate      = $isEtf ? '2000-01-31' : '2010-01-04';
 $_stmt = $db->prepare("SELECT MAX(ranking_date) FROM rsl_rankings WHERE universe=?");
 $_stmt->execute([$universe]);
 $maxDate = $_stmt->fetchColumn() ?: date('Y-m-d');
-$simStartDate = $_GET['start_date'] ?? '2024-01-01';
+$simStartDate = $_GET['start_date'] ?? ($isEtf ? '2010-01-31' : '2024-01-01');
 if ($simStartDate < $minDate) $simStartDate = $minDate;
 if ($simStartDate > $maxDate) $simStartDate = $maxDate;
 
 $simStmt = $db->prepare(
     'SELECT r.ranking_date, r.ticker, r.sector, r.current_price, r.rsl, r.rank_overall,
-            COALESCE(s.name, r.ticker) AS company
+            r.is_selected, COALESCE(s.name, r.ticker) AS company
      FROM rsl_rankings r
      LEFT JOIN stocks s ON s.ticker = r.ticker
      WHERE r.ranking_date >= ? AND r.universe = ?
@@ -42,7 +43,8 @@ foreach ($simStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
 }
 $simSundays = array_keys($simByDate);
 
-$simStartCapital = max(1000.0, (float)($_GET['capital'] ?? 50000));
+// ETF: immer EUR 50.000 als Startkapital
+$simStartCapital = $isEtf ? 50000.0 : max(1000.0, (float)($_GET['capital'] ?? 50000));
 $simCash         = $simStartCapital;
 $simHoldings = [];   // ticker → [shares, buy_price, sector, rsl, company]
 $latestPortfolioDate = null;
@@ -50,58 +52,87 @@ $latestRawSnap = [];
 $latestRawTotal = 0.0;
 $prevTickers = [];
 
+$etfNameMap = [
+    '^GSPC'  => 'USA Large Caps (S&P 500)',  '^NDX'   => 'USA Wachstum (Nasdaq-100)',
+    '^STOXX' => 'Europa (STOXX 600)',         '^N225'  => 'Japan (Nikkei 225)',
+    'EEM'    => 'Emerging Markets',           'GC=F'   => 'Gold',
+    'AGG'    => 'Staatsanleihen',             'SHY'    => 'Cash / Geldmarkt',
+];
+
 foreach ($simSundays as $i => $sunday) {
     $weekRankings = $simByDate[$sunday];
     $rankByTicker = array_column($weekRankings, null, 'ticker');
     $isLast = ($i === count($simSundays) - 1);
 
-    $saleProceeds = [];
-
-    // VERKAUF: Rang > Schwelle oder nicht mehr im Index
-    $holdRank = $isDax ? ($sunday >= '2021-09-20' ? 10 : 7) : 125;
-    foreach (array_keys($simHoldings) as $ticker) {
-        $rank = isset($rankByTicker[$ticker])
-            ? (int)$rankByTicker[$ticker]['rank_overall'] : PHP_INT_MAX;
-        if ($rank > $holdRank) {
-            $price = (float)($rankByTicker[$ticker]['current_price'] ?? $simHoldings[$ticker]['buy_price']);
-            $net   = $simHoldings[$ticker]['shares'] * $price;
-            $simCash += $net;
-            $saleProceeds[] = $net;
-            unset($simHoldings[$ticker]);
+    if ($isEtf) {
+        // ETF: monatliches Full-Rebalancing, Top 3, gleiche Gewichtung
+        $targetTickers = [];
+        foreach ($weekRankings as $r) {
+            if ($r['is_selected']) $targetTickers[$r['ticker']] = $r;
+        }
+        $totalValue = $simCash;
+        foreach ($simHoldings as $ticker => $h) {
+            $totalValue += $h['shares'] * (float)($rankByTicker[$ticker]['current_price'] ?? $h['buy_price']);
+        }
+        $prevHoldings = array_keys($simHoldings);
+        $simCash = $totalValue;
+        $simHoldings = [];
+        $n = count($targetTickers);
+        if ($n > 0) {
+            $perSlot = $simCash / $n;
+            foreach ($targetTickers as $ticker => $r) {
+                $price = (float)$r['current_price'];
+                if ($price <= 0) continue;
+                $simCash -= $perSlot;
+                $simHoldings[$ticker] = [
+                    'shares'    => $perSlot / $price,
+                    'buy_price' => $price,
+                    'sector'    => $r['sector'] ?? '',
+                    'rsl'       => (float)$r['rsl'],
+                    'company'   => $etfNameMap[$ticker] ?? $ticker,
+                ];
+            }
+        }
+    } else {
+        $saleProceeds = [];
+        $holdRank = $isDax ? ($sunday >= '2021-09-20' ? 10 : 7) : 125;
+        foreach (array_keys($simHoldings) as $ticker) {
+            $rank = isset($rankByTicker[$ticker])
+                ? (int)$rankByTicker[$ticker]['rank_overall'] : PHP_INT_MAX;
+            if ($rank > $holdRank) {
+                $price = (float)($rankByTicker[$ticker]['current_price'] ?? $simHoldings[$ticker]['buy_price']);
+                $net   = $simHoldings[$ticker]['shares'] * $price;
+                $simCash += $net;
+                $saleProceeds[] = $net;
+                unset($simHoldings[$ticker]);
+            }
+        }
+        $vacancies   = 5 - count($simHoldings);
+        $heldSectors = array_column(array_values($simHoldings), 'sector');
+        $cashPerSlot = $vacancies > 0 ? $simCash / $vacancies : 0;
+        foreach ($weekRankings as $stock) {
+            if ($vacancies <= 0) break;
+            if (isset($simHoldings[$stock['ticker']])) continue;
+            if ($isLast && isset($maFlagged[$stock['ticker']])) continue;
+            $sector = $stock['sector'] ?? 'Unknown';
+            if (in_array($sector, $heldSectors)) continue;
+            $price = (float)$stock['current_price'];
+            if ($price <= 0) continue;
+            $budget = !empty($saleProceeds) ? array_shift($saleProceeds) : $cashPerSlot;
+            if ($budget < 1) continue;
+            $simCash -= $budget;
+            $simHoldings[$stock['ticker']] = [
+                'shares'    => $budget / $price,
+                'buy_price' => $price,
+                'sector'    => $sector,
+                'rsl'       => (float)$stock['rsl'],
+                'company'   => $stock['company'],
+            ];
+            $heldSectors[] = $sector;
+            $vacancies--;
         }
     }
 
-    // KAUF
-    $vacancies   = 5 - count($simHoldings);
-    $heldSectors = array_column(array_values($simHoldings), 'sector');
-    $cashPerSlot = $vacancies > 0 ? $simCash / $vacancies : 0;
-
-    foreach ($weekRankings as $stock) {
-        if ($vacancies <= 0) break;
-        if (isset($simHoldings[$stock['ticker']])) continue;
-        if ($isLast && isset($maFlagged[$stock['ticker']])) continue;
-        $sector = $stock['sector'] ?? 'Unknown';
-        if (in_array($sector, $heldSectors)) continue;
-        $price = (float)$stock['current_price'];
-        if ($price <= 0) continue;
-
-        $budget = !empty($saleProceeds) ? array_shift($saleProceeds) : $cashPerSlot;
-        if ($budget < 1) continue;
-        $shares = $budget / $price;
-        $simCash -= $budget;
-
-        $simHoldings[$stock['ticker']] = [
-            'shares'    => $shares,
-            'buy_price' => $price,
-            'sector'    => $sector,
-            'rsl'       => (float)$stock['rsl'],
-            'company'   => $stock['company'],
-        ];
-        $heldSectors[] = $sector;
-        $vacancies--;
-    }
-
-    // Letzten Snapshot merken (für is_new: vorletzter Snapshot)
     if ($isLast) {
         $latestPortfolioDate = $sunday;
         $snap = []; $snapTotal = $simCash;
@@ -127,13 +158,28 @@ foreach ($simSundays as $i => $sunday) {
 // ── Rendite aus eigener Simulation (frischer Start, identisch zu simulation.php) ─
 $simReturn = $latestRawTotal > 0 ? ($latestRawTotal - $simStartCapital) / $simStartCapital : 0;
 
+// ETF: WKN-Mapping für Dashboard-Tabelle (wie in simulation.php)
+$etfWknMap = [
+    '^GSPC' => 'A0YEDL', '^NDX'   => '801498',
+    '^STOXX'=> '263530', '^N225'  => 'A0F5EB',
+    'EEM'   => 'A0HGZT', 'GC=F'  => 'A0S9GB',
+    'AGG'   => 'A0RFED', 'SHY'   => 'DBX0AN',
+];
+$etfNameMapIdx = [
+    '^GSPC'  => 'USA Large Caps (S&P 500)',  '^NDX'   => 'USA Wachstum (Nasdaq-100)',
+    '^STOXX' => 'Europa (STOXX 600)',         '^N225'  => 'Japan (Nikkei 225)',
+    'EEM'    => 'Emerging Markets',           'GC=F'   => 'Gold',
+    'AGG'    => 'Staatsanleihen',             'SHY'    => 'Cash / Geldmarkt',
+];
+
 // Gewichte aus Simulation (skalenunabhängig) — USD-Beträge werden clientseitig skaliert
 $latestPortfolio = [];
 foreach ($latestRawSnap as $ticker => $h) {
     $weight = $latestRawTotal > 0 ? $h['raw_mv'] / $latestRawTotal * 100 : 0;
     $latestPortfolio[] = [
         'ticker'  => $ticker,
-        'company' => $h['company'],
+        'wkn'     => $isEtf ? ($etfWknMap[$ticker] ?? $ticker) : $ticker,
+        'company' => $isEtf ? ($etfNameMapIdx[$ticker] ?? $h['company']) : $h['company'],
         'sector'  => $h['sector'],
         'rsl'     => $h['rsl'],
         'weight'  => $weight,
@@ -150,7 +196,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RSL nach Levy — <?= $isDax ? 'DAX' : 'S&P 500' ?> Dashboard</title>
+<title>RSL nach Levy — <?= $isEtf ? 'ETF Multi-Asset' : ($isDax ? 'DAX' : 'S&P 500') ?> Dashboard</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
 <style>
@@ -200,6 +246,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
   .ptable td { border-color:#dee2e6; vertical-align:middle; font-size:.82rem; }
   .ptable tfoot td { font-size:.82rem; }
   .rsl-pill { background:#f0f2f5; border-radius:6px; padding:.15em .5em; font-size:.78rem; font-weight:600; color:#374151; }
+  .ticker-badge { font-weight:700; font-size:.82rem; letter-spacing:.02em; }
 </style>
 </head>
 <body>
@@ -228,7 +275,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
 <div class="d-flex justify-content-between align-items-center mb-4">
   <div>
     <h4 class="mb-0">Dashboard</h4>
-    <small class="text-muted">Stand: <?= $latestDate ? date('d.m.Y', strtotime($latestDate)) : '—' ?> (letzter Sonntag)</small>
+    <small class="text-muted">Stand: <?= $latestDate ? date('d.m.Y', strtotime($latestDate)) : '—' ?> (<?= $isEtf ? 'letzter Monatsultimo' : 'letzter Sonntag' ?>)</small>
   </div>
   <div>
     <span class="status-dot dot-green"></span><small class="text-muted">Live-Daten aktiv</small>
@@ -256,10 +303,15 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
         <table class="table ptable mb-0">
           <thead>
             <tr>
+              <?php if ($isEtf): ?>
+              <th class="ps-3">WKN</th>
+              <th>ETF</th>
+              <?php else: ?>
               <th class="ps-3">Unternehmen</th>
               <th>Sektor</th>
+              <?php endif; ?>
               <th class="text-end">Gewicht</th>
-              <th class="text-end" id="th-betrag">Betrag in <?= $isDax ? 'EUR' : 'USD' ?></th>
+              <th class="text-end" id="th-betrag">Betrag in <?= ($isDax || $isEtf) ? 'EUR' : 'USD' ?></th>
               <th class="text-end pe-3">RSL Score</th>
             </tr>
           </thead>
@@ -270,8 +322,14 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
             $sumW += $row['weight'];
           ?>
             <tr>
-              <td class="ps-3" style="color:#374151;"><?= htmlspecialchars($row['company']) ?></td>
-              <td style="color:#6c757d;"><?= htmlspecialchars($row['sector']) ?></td>
+              <td class="ps-3" style="color:#374151;">
+                <?php if ($isEtf): ?>
+                  <span class="ticker-badge"><?= htmlspecialchars($row['wkn']) ?></span>
+                <?php else: ?>
+                  <?= htmlspecialchars($row['company']) ?>
+                <?php endif; ?>
+              </td>
+              <td style="color:#6c757d;"><?= htmlspecialchars($row['company']) ?></td>
               <td class="text-end"><?= number_format($row['weight'], 1, ',', '.') ?>%</td>
               <td class="text-end js-mv" data-weight="<?= round($row['weight'], 6) ?>">—</td>
               <td class="text-end pe-3">
@@ -307,7 +365,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
         <div class="mt-3 text-center">
           <div style="font-size:.76rem;color:#6c757d;text-transform:uppercase;letter-spacing:.4px;">Gesamtwert</div>
           <div id="js-total-display" style="font-size:1.5rem;font-weight:700;color:#212529;">
-            — <span style="font-size:.9rem;font-weight:400;color:#6c757d;"><?= $isDax ? 'EUR' : 'USD' ?></span>
+            — <span style="font-size:.9rem;font-weight:400;color:#6c757d;" id="js-currency-label"><?= ($isDax || $isEtf) ? 'EUR' : 'USD' ?></span>
           </div>
         </div>
         <?php endif; ?>
@@ -320,7 +378,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
 </div>
 
 <footer class="container-fluid px-4 text-center">
-  RSL nach Levy — <?= $isDax ? 'DAX' : 'S&P 500' ?> Momentum-System &nbsp;|&nbsp;
+  RSL nach Levy — <?= $isEtf ? 'ETF Multi-Asset' : ($isDax ? 'DAX' : 'S&P 500') ?> Momentum-System &nbsp;|&nbsp;
   Powered by Apache + MariaDB + PHP 8.2 &nbsp;|&nbsp;
   Daten: Yahoo Finance &nbsp;|&nbsp;
   <small>Kein Anlageberater — nur zu Informationszwecken</small>
@@ -330,41 +388,51 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
 const _isDax     = <?= $isDax ? 'true' : 'false' ?>;
-const _currency  = _isDax ? 'EUR' : (localStorage.getItem('currency') || 'USD');
+const _isEtf     = <?= $isEtf ? 'true' : 'false' ?>;
+const _currency  = (_isDax || _isEtf) ? 'EUR' : (localStorage.getItem('currency') || 'USD');
+const _defStart  = _isEtf ? '2010-01-31' : '2024-01-01';
 
 (function () {
   // ── Simulation-Parameter aus localStorage mit URL-Parametern abgleichen ──
-  const params      = new URLSearchParams(window.location.search);
-  const simStart    = localStorage.getItem('sim_start_date');
-  const simCapSaved = localStorage.getItem('sim_capital');
-  const urlStart    = params.get('start_date');
-  const urlCap      = params.get('capital');
-  const needStart   = simStart   && simStart   !== urlStart;
-  const needCap     = simCapSaved && simCapSaved !== urlCap;
-  if (needStart || needCap) {
-    const s   = simStart    || urlStart    || '2024-01-01';
-    const c   = simCapSaved || urlCap      || '50000';
-    const univ = params.get('universe') || localStorage.getItem('universe') || 'sp500';
-    window.location.replace('index.php?start_date=' + encodeURIComponent(s) + '&capital=' + encodeURIComponent(c) + '&universe=' + encodeURIComponent(univ));
+  const params = new URLSearchParams(window.location.search);
+  const urlStart = params.get('start_date');
+  const urlCap   = params.get('capital');
+  const univ     = params.get('universe') || 'sp500';
+
+  // Universumsabhängiger Key — verhindert Überschreiben durch andere Universen
+  const _startKey = 'sim_start_date_' + univ;
+  const targetStart = localStorage.getItem(_startKey) || _defStart;
+  // ETF: Kapital immer 50.000; andere Universen aus localStorage
+  const targetCap = _isEtf ? '50000' : localStorage.getItem('sim_capital');
+
+  const needRedirect = (targetStart !== urlStart) || (targetCap && targetCap !== urlCap);
+  if (needRedirect) {
+    const p = new URLSearchParams(params);
+    p.set('start_date', targetStart);
+    if (targetCap) p.set('capital', targetCap);
+    window.location.replace('index.php?' + p.toString());
     return;
   }
 
-  // Currency toggle init (Navbar übernimmt die Buttons, hier nur noch die Variable lesen)
-
   const currentEurUsd = <?= round($currentEurUsd, 6) ?>;
 
-  // ── Gesamtwert aus eigener Simulation (identisch zu simulation.php) ────
-  const simReturn    = <?= round($simReturn, 8) ?>;
-  const simCapital   = parseFloat(localStorage.getItem('sim_capital')) || 50000;
-  const totalUsd     = simCapital * (1 + simReturn);
-  const total        = (!_isDax && _currency === 'EUR') ? totalUsd / currentEurUsd : totalUsd;
-  const sym          = _currency === 'EUR' ? '€' : '$';
+  // ── Gesamtwert aus eigener Simulation ──────────────────────────────────
+  const simReturn  = <?= round($simReturn, 8) ?>;
+  // ETF: immer EUR 50.000 als Basis (localStorage ignorieren)
+  const simCapital = _isEtf ? 50000 : (parseFloat(localStorage.getItem('sim_capital')) || 50000);
+  const totalUsd   = simCapital * (1 + simReturn);
+  // DAX + ETF: simCapital ist bereits in EUR → kein Dividieren durch EUR/USD-Kurs
+  // S&P 500 EUR-Modus: simCapital in USD → in EUR umrechnen
+  const total = (_isDax || _isEtf) ? totalUsd
+              : (_currency === 'EUR' ? totalUsd / currentEurUsd : totalUsd);
+  const dispCurr   = (_isDax || _isEtf) ? 'EUR' : 'USD';
 
-  // ── Tabellen-Header aktualisieren ───────────────────────────────────────
+  // ── Labels & Werte ──────────────────────────────────────────────────────
   const thBetrag = document.getElementById('th-betrag');
-  if (thBetrag) thBetrag.textContent = 'Betrag in ' + _currency;
+  if (thBetrag) thBetrag.textContent = 'Betrag in ' + dispCurr;
+  const currLbl = document.getElementById('js-currency-label');
+  if (currLbl) currLbl.textContent = dispCurr;
 
-  // ── Tabellen-Werte befüllen ──────────────────────────────────────────────
   document.querySelectorAll('.js-mv').forEach(el => {
     const mv = total * parseFloat(el.dataset.weight) / 100;
     el.textContent = Math.round(mv).toLocaleString('de-DE');
@@ -374,7 +442,7 @@ const _currency  = _isDax ? 'EUR' : (localStorage.getItem('currency') || 'USD');
   const dispEl = document.getElementById('js-total-display');
   if (dispEl) dispEl.innerHTML =
     Math.round(total).toLocaleString('de-DE') +
-    ' <span style="font-size:.9rem;font-weight:400;color:#6c757d;">' + _currency + '</span>';
+    ' <span style="font-size:.9rem;font-weight:400;color:#6c757d;">' + dispCurr + '</span>';
 
   // ── Pie-Chart ────────────────────────────────────────────────────────────
   const canvas = document.getElementById('portfolioPie');
@@ -386,12 +454,12 @@ const _currency  = _isDax ? 'EUR' : (localStorage.getItem('currency') || 'USD');
     'weight'  => round($r['weight'], 6),
   ], $latestPortfolio)) ?>;
 
-  const palette = ['#2563eb','#16a34a','#d97706','#dc2626','#7c3aed'];
+  const palette = ['#2563eb','#16a34a','#d97706','#dc2626','#7c3aed','#0891b2','#b91c1c','#065f46'];
 
   new Chart(canvas, {
     type: 'doughnut',
     data: {
-      labels: data.map(d => d.ticker),
+      labels: data.map(d => _isEtf ? d.company : d.ticker),
       datasets: [{
         data: data.map(d => d.weight),
         backgroundColor: palette,
@@ -410,7 +478,7 @@ const _currency  = _isDax ? 'EUR' : (localStorage.getItem('currency') || 'USD');
             label: ctx => {
               const d = data[ctx.dataIndex];
               const mv = Math.round(total * d.weight / 100);
-              return ` ${d.weight.toFixed(1).replace('.',',')}%  —  ${mv.toLocaleString('de-DE')} ${_currency}`;
+              return ` ${d.weight.toFixed(1).replace('.',',')}%  —  ${mv.toLocaleString('de-DE')} ${dispCurr}`;
             }
           }
         }

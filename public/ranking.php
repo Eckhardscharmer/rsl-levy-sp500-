@@ -1,15 +1,32 @@
 <?php
 require_once __DIR__ . '/../src/RSLEngine.php';
 $rsl = new RSLEngine();
+$db  = getDB();
 
 $universe = $_GET['universe'] ?? 'sp500';
-if (!in_array($universe, ['sp500', 'dax'])) $universe = 'sp500';
+if (!in_array($universe, ['sp500', 'dax', 'etf'])) $universe = 'sp500';
 $isDax    = ($universe === 'dax');
+$isEtf    = ($universe === 'etf');
 
 $latestDate = $rsl->getLatestRankingDate($universe);
 $date       = $_GET['date'] ?? $latestDate;
-$limit      = (int)($_GET['limit'] ?? 100);
-$ranking    = $rsl->getFullRanking($date, $limit, $universe);
+$limit      = (int)($_GET['limit'] ?? ($isEtf ? 8 : 100));
+
+// ETF: alle Instrumente laden inkl. sma_200
+if ($isEtf) {
+    $stmtEtf = $db->prepare(
+        'SELECT r.ticker, COALESCE(s.name, r.ticker) AS name, r.sector,
+                r.current_price, r.sma_26w AS sma_27w, r.sma_200, r.rsl, r.rank_overall, r.is_selected
+         FROM rsl_rankings r
+         LEFT JOIN stocks s ON s.ticker = r.ticker
+         WHERE r.ranking_date = ? AND r.universe = "etf"
+         ORDER BY r.rank_overall ASC'
+    );
+    $stmtEtf->execute([$date]);
+    $ranking = $stmtEtf->fetchAll(PDO::FETCH_ASSOC);
+} else {
+    $ranking = $rsl->getFullRanking($date, $limit, $universe);
+}
 // Portfolio-Markierung erfolgt client-seitig via localStorage (sim_portfolio_tickers)
 $db            = getDB();
 $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='EURUSD=X' ORDER BY price_date DESC LIMIT 1")->fetchColumn() ?: 1.10);
@@ -74,7 +91,89 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
     </form>
   </div>
 
-  <!-- Sektor-Filter (clientseitig) -->
+<?php if ($isEtf): ?>
+  <!-- ETF: kompakte Anzeige, kein Sektor-Filter -->
+  <div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-list-ol me-2"></i>8 Anlageklassen &nbsp;·&nbsp; Monatliches Rebalancing</span>
+      <span class="text-muted small">
+        <span class="portfolio-badge me-2" style="background:#d1fae5;color:#065f46;">● Top 3</span>= Kaufsignal (RSL-Rang + SMA200-Filter) &nbsp;·&nbsp;
+        RSL = Kurs / SMA 27 Wochen
+      </span>
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+      <table class="table table-hover mb-0">
+        <thead>
+          <tr>
+            <th class="ps-3" style="width:60px">Rang</th>
+            <th style="width:100px">Index-Ticker</th>
+            <th>Anlageklasse</th>
+            <th>ETF (reale Umsetzung)</th>
+            <th class="text-end">Kurs</th>
+            <th class="text-end">SMA 27W</th>
+            <th class="text-end">SMA 200</th>
+            <th class="text-center">Trend</th>
+            <th class="text-end" style="width:160px">RSL</th>
+          </tr>
+        </thead>
+        <tbody>
+        <?php
+        $maxRsl = !empty($ranking) ? max(array_column($ranking, 'rsl')) : 2;
+        $etfMap = [
+            '^GSPC'  => 'SXR8',   '^NDX'  => 'EQQQ',  '^STOXX' => 'EXSA',
+            '^N225'  => 'DBXJ',   'EEM'   => 'XMME',  'GC=F'   => 'Xetra-Gold',
+            'AGG'    => 'IGLO',   'SHY'   => 'Geldmarkt-ETF',
+        ];
+        foreach ($ranking as $r):
+          $rslPct    = min(100, ($r['rsl'] / max($maxRsl, 0.01)) * 100);
+          $barColor  = $r['rsl'] >= 1.1 ? '#4ade80' : ($r['rsl'] >= 1.0 ? '#fbbf24' : '#f87171');
+          $aboveSma  = $r['sma_200'] && $r['current_price'] > $r['sma_200'];
+          $isTop3    = $r['is_selected'] == 1;
+          $etfTicker = $etfMap[$r['ticker']] ?? '';
+        ?>
+          <tr class="<?= $isTop3 ? 'portfolio-row' : '' ?>">
+            <td class="ps-3 fw-600">
+              <?php if ($isTop3): ?>
+              <span class="portfolio-badge" style="background:#d1fae5;color:#065f46;">● TOP 3</span>
+              <?php else: ?>
+              <?= $r['rank_overall'] ?>
+              <?php endif; ?>
+            </td>
+            <td style="font-weight:700;font-size:.85rem;"><?= htmlspecialchars($r['ticker']) ?></td>
+            <td><?= htmlspecialchars($r['name'] ?? '') ?></td>
+            <td class="text-muted" style="font-size:.8rem;"><?= htmlspecialchars($etfTicker) ?></td>
+            <td class="text-end"><?= number_format($r['current_price'], 2) ?></td>
+            <td class="text-end text-muted"><?= number_format($r['sma_27w'] ?? $r['sma_26w'] ?? 0, 2) ?></td>
+            <td class="text-end text-muted"><?= $r['sma_200'] ? number_format($r['sma_200'], 2) : '—' ?></td>
+            <td class="text-center">
+              <?php if ($aboveSma): ?>
+                <span style="color:#4ade80;font-size:1.1rem;" title="Kurs &gt; SMA200 — investierbar">▲</span>
+              <?php else: ?>
+                <span style="color:#f87171;font-size:1.1rem;" title="Kurs &lt; SMA200 — nicht investierbar">▼</span>
+              <?php endif; ?>
+            </td>
+            <td class="text-end pe-3">
+              <div class="d-flex align-items-center justify-content-end gap-2">
+                <div style="width:80px">
+                  <div class="rsl-bar">
+                    <div class="rsl-bar-fill" style="width:<?= $rslPct ?>%;background:<?= $barColor ?>"></div>
+                  </div>
+                </div>
+                <span class="rsl-value" style="color:<?= $barColor ?>;min-width:52px">
+                  <?= number_format($r['rsl'], 4) ?>
+                </span>
+              </div>
+            </td>
+          </tr>
+        <?php endforeach; ?>
+        </tbody>
+      </table>
+      </div>
+    </div>
+  </div>
+<?php else: ?>
+  <!-- Sektor-Filter (clientseitig, nur S&P 500 / DAX) -->
   <div class="mb-3 d-flex gap-2 flex-wrap">
     <input type="text" id="searchInput" class="form-control form-control-sm" style="max-width:200px"
            placeholder="Ticker oder Name suchen...">
@@ -152,21 +251,23 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
       </div>
     </div>
   </div>
+<?php endif; ?>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 // Currency toggle
 const _isDax       = <?= $isDax ? 'true' : 'false' ?>;
-const _currency    = _isDax ? 'EUR' : (localStorage.getItem('currency') || 'USD');
+const _isEtf       = <?= $isEtf ? 'true' : 'false' ?>;
+const _currency    = (_isDax || _isEtf) ? 'EUR' : (localStorage.getItem('currency') || 'USD');
 const currentEurUsd = <?= round($currentEurUsd, 6) ?>;
 document.getElementById('btn-usd')?.classList.toggle('active', _currency === 'USD');
 document.getElementById('btn-eur')?.classList.toggle('active', _currency === 'EUR');
 document.getElementById('btn-usd')?.addEventListener('click', () => { localStorage.setItem('currency', 'USD'); location.reload(); });
 document.getElementById('btn-eur')?.addEventListener('click', () => { localStorage.setItem('currency', 'EUR'); location.reload(); });
 
-// S&P 500 mit EUR-Anzeige: USD-Kurse umrechnen
-if (!_isDax && _currency === 'EUR') {
+// S&P 500 mit EUR-Anzeige: USD-Kurse umrechnen (nicht für ETF/DAX — deren Preise sind Indexwerte)
+if (!_isDax && !_isEtf && _currency === 'EUR') {
   const thKurs = document.getElementById('th-kurs'); if (thKurs) thKurs.textContent = 'Kurs (EUR)';
   const thSma  = document.getElementById('th-sma');  if (thSma)  thSma.textContent  = 'SMA 26W (EUR)';
   document.querySelectorAll('.price-cell').forEach(el => {

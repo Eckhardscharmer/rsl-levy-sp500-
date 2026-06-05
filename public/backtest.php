@@ -4,11 +4,12 @@ $db = getDB();
 
 // ── Universe ───────────────────────────────────────────────────────────────
 $universe = $_GET['universe'] ?? 'sp500';
-if (!in_array($universe, ['sp500', 'dax'])) $universe = 'sp500';
+if (!in_array($universe, ['sp500', 'dax', 'etf'])) $universe = 'sp500';
 $isDax    = ($universe === 'dax');
+$isEtf    = ($universe === 'etf');
 
 // ── Parameter (via GET, gesetzt vom JS-Redirect) ───────────────────────────
-$minDate      = '2010-01-04';
+$minDate      = $isEtf ? '2000-01-31' : '2010-01-04';
 $maxDate      = $db->query("SELECT MAX(ranking_date) FROM rsl_rankings WHERE universe='$universe'")->fetchColumn() ?: date('Y-m-d');
 $startDate    = $_GET['start_date'] ?? $minDate;
 $startCapital = max(1000, (float)($_GET['capital'] ?? 100000));
@@ -19,18 +20,15 @@ $hasData  = (bool)$db->query("SELECT COUNT(*) FROM rsl_rankings WHERE universe='
 $numBuys  = 0;
 $endDate  = date('Y-m-d');
 $chartDates = $chartPortfolio = $chartBenchmark = $allBuyDatesJson = 'null';
+$allSellDatesJson = 'null';
+$currentEurUsd = 1.10;
+$chartEurRates = [];   // leeres Array, kein String 'null'
 
 if ($hasData) {
-    // ── M&A-Filter ──────────────────────────────────────────────────────────
-    $maFlagged = [];
-    foreach ($db->query('SELECT ticker FROM m_and_a_flags WHERE is_active = 1')
-                 ->fetchAll(PDO::FETCH_COLUMN) as $t) {
-        $maFlagged[$t] = true;
-    }
-
     // ── Rankings ab Startdatum laden ─────────────────────────────────────────
     $stmt = $db->prepare(
-        'SELECT r.ranking_date, r.ticker, r.sector, r.current_price, r.rsl, r.rank_overall
+        'SELECT r.ranking_date, r.ticker, r.sector, r.current_price, r.rsl,
+                r.rank_overall, r.is_selected
          FROM rsl_rankings r
          WHERE r.ranking_date >= ? AND r.universe = ?
          ORDER BY r.ranking_date ASC, r.rank_overall ASC'
@@ -42,71 +40,122 @@ if ($hasData) {
     }
     $simSundays = array_keys($byDate);
 
-    // ── Frische Simulation (identische Logik wie simulation.php) ─────────────
-    $cash = $startCapital;
-    $holdings     = [];
-    $weeklyPortfolio  = [];  // date => portfolio_value
-    $allBuyDatesList  = [];  // alle Kauf-Daten für Trades-Chart
-    $allSellDatesList = [];  // alle Verkauf-Daten für Trades-Chart
+    $cash             = $startCapital;
+    $holdings         = [];
+    $weeklyPortfolio  = [];
+    $allBuyDatesList  = [];
+    $allSellDatesList = [];
 
-    foreach ($simSundays as $i => $sunday) {
-        $weekRankings = $byDate[$sunday];
-        $rankByTicker = array_column($weekRankings, null, 'ticker');
-        $isLast       = ($i === count($simSundays) - 1);
-        $saleProceeds = [];
+    if ($isEtf) {
+        // ── ETF-Simulation: monatlich, Top 3, SMA200-Filter, Cash-Regel ────────
+        $prevHoldings = [];
+        foreach ($simSundays as $monthEnd) {
+            $monthRankings = $byDate[$monthEnd];
+            $rankByTicker  = array_column($monthRankings, null, 'ticker');
 
-        // VERKAUF
-        $holdRank = $isDax ? ($sunday >= '2021-09-20' ? 10 : 7) : 125;
-        foreach (array_keys($holdings) as $ticker) {
-            $rank = isset($rankByTicker[$ticker])
-                ? (int)$rankByTicker[$ticker]['rank_overall'] : PHP_INT_MAX;
-            if ($rank > $holdRank) {
-                $price = (float)($rankByTicker[$ticker]['current_price'] ?? $holdings[$ticker]['buy_price']);
-                $net   = $holdings[$ticker]['shares'] * $price;
-                $cash += $net;
-                $saleProceeds[] = $net;
-                $allSellDatesList[] = $sunday;
-                unset($holdings[$ticker]);
+            // Ziel-Portfolio: is_selected=1
+            $targetTickers = [];
+            foreach ($monthRankings as $r) {
+                if ($r['is_selected']) $targetTickers[$r['ticker']] = $r;
             }
+
+            // Gesamtwert (Cash + Holdings zum aktuellen Kurs)
+            $totalValue = $cash;
+            foreach ($holdings as $ticker => $h) {
+                $totalValue += $h['shares'] * (float)($rankByTicker[$ticker]['current_price'] ?? $h['buy_price']);
+            }
+
+            // Trades nur bei Zusammensetzungsänderung zählen
+            $prevSet   = array_keys($holdings);
+            $targetSet = array_keys($targetTickers);
+            foreach (array_diff($prevSet, $targetSet) as $t)   $allSellDatesList[] = $monthEnd;
+            foreach (array_diff($targetSet, $prevSet) as $t)   $allBuyDatesList[]  = $monthEnd;
+
+            // Alles liquidieren (monatliches Full-Rebalancing)
+            $cash     = $totalValue;
+            $holdings = [];
+
+            // Neu kaufen: gleichmäßig auf Ziel-Positionen aufteilen
+            $n = count($targetTickers);
+            if ($n > 0) {
+                $perSlot = $cash / $n;
+                foreach ($targetTickers as $ticker => $r) {
+                    $price = (float)$r['current_price'];
+                    if ($price <= 0) continue;
+                    $cash -= $perSlot;
+                    $holdings[$ticker] = ['shares' => $perSlot / $price, 'buy_price' => $price];
+                }
+            }
+
+            // Monatlicher Portfolio-Wert
+            $invested = 0;
+            foreach ($holdings as $ticker => $h) {
+                $invested += $h['shares'] * (float)($rankByTicker[$ticker]['current_price'] ?? $h['buy_price']);
+            }
+            $weeklyPortfolio[$monthEnd] = $cash + $invested;
+        }
+        // Benchmark für ETF: MSCI ACWI (iShares MSCI ACWI ETF, Daten ab März 2008)
+        $benchTicker = 'ACWI';
+    } else {
+        // ── S&P 500 / DAX Simulation (wöchentlich, Top 5, Sektordiversifikation) ─
+        $maFlagged = [];
+        foreach ($db->query('SELECT ticker FROM m_and_a_flags WHERE is_active = 1')
+                     ->fetchAll(PDO::FETCH_COLUMN) as $t) {
+            $maFlagged[$t] = true;
         }
 
-        // KAUF
-        $vacancies   = 5 - count($holdings);
-        $heldSectors = array_column(array_values($holdings), 'sector');
-        $cashPerSlot = $vacancies > 0 ? $cash / $vacancies : 0;
+        foreach ($simSundays as $i => $sunday) {
+            $weekRankings = $byDate[$sunday];
+            $rankByTicker = array_column($weekRankings, null, 'ticker');
+            $isLast       = ($i === count($simSundays) - 1);
+            $saleProceeds = [];
 
-        foreach ($weekRankings as $stock) {
-            if ($vacancies <= 0) break;
-            if (isset($holdings[$stock['ticker']])) continue;
-            if ($isLast && isset($maFlagged[$stock['ticker']])) continue;
-            $sector = $stock['sector'] ?? 'Unknown';
-            if (in_array($sector, $heldSectors)) continue;
-            $price = (float)$stock['current_price'];
-            if ($price <= 0) continue;
-            $budget = !empty($saleProceeds) ? array_shift($saleProceeds) : $cashPerSlot;
-            if ($budget < 1) continue;
-            $cash -= $budget;
-            $holdings[$stock['ticker']] = [
-                'shares'    => $budget / $price,
-                'buy_price' => $price,
-                'sector'    => $sector,
-            ];
-            $heldSectors[]     = $sector;
-            $allBuyDatesList[] = $sunday;
-            $vacancies--;
-        }
+            $holdRank = $isDax ? ($sunday >= '2021-09-20' ? 10 : 7) : 125;
+            foreach (array_keys($holdings) as $ticker) {
+                $rank = isset($rankByTicker[$ticker])
+                    ? (int)$rankByTicker[$ticker]['rank_overall'] : PHP_INT_MAX;
+                if ($rank > $holdRank) {
+                    $price = (float)($rankByTicker[$ticker]['current_price'] ?? $holdings[$ticker]['buy_price']);
+                    $net   = $holdings[$ticker]['shares'] * $price;
+                    $cash += $net;
+                    $saleProceeds[] = $net;
+                    $allSellDatesList[] = $sunday;
+                    unset($holdings[$ticker]);
+                }
+            }
 
-        // Wöchentlicher Portfolio-Wert
-        $invested = 0;
-        foreach ($holdings as $ticker => $h) {
-            $price     = (float)($rankByTicker[$ticker]['current_price'] ?? $h['buy_price']);
-            $invested += $h['shares'] * $price;
+            $vacancies   = 5 - count($holdings);
+            $heldSectors = array_column(array_values($holdings), 'sector');
+            $cashPerSlot = $vacancies > 0 ? $cash / $vacancies : 0;
+
+            foreach ($weekRankings as $stock) {
+                if ($vacancies <= 0) break;
+                if (isset($holdings[$stock['ticker']])) continue;
+                if ($isLast && isset($maFlagged[$stock['ticker']])) continue;
+                $sector = $stock['sector'] ?? 'Unknown';
+                if (in_array($sector, $heldSectors)) continue;
+                $price = (float)$stock['current_price'];
+                if ($price <= 0) continue;
+                $budget = !empty($saleProceeds) ? array_shift($saleProceeds) : $cashPerSlot;
+                if ($budget < 1) continue;
+                $cash -= $budget;
+                $holdings[$stock['ticker']] = ['shares' => $budget / $price, 'buy_price' => $price, 'sector' => $sector];
+                $heldSectors[]     = $sector;
+                $allBuyDatesList[] = $sunday;
+                $vacancies--;
+            }
+
+            $invested = 0;
+            foreach ($holdings as $ticker => $h) {
+                $price     = (float)($rankByTicker[$ticker]['current_price'] ?? $h['buy_price']);
+                $invested += $h['shares'] * $price;
+            }
+            $weeklyPortfolio[$sunday] = $cash + $invested;
         }
-        $weeklyPortfolio[$sunday] = $cash + $invested;
+        $benchTicker = $isDax ? '^GDAXI' : 'SPY';
     }
 
-    // ── Benchmark (SPY für S&P 500, ^GDAXI für DAX) auf startCapital normiert ──
-    $benchTicker = $isDax ? '^GDAXI' : 'SPY';
+    // ── Benchmark auf startCapital normiert ───────────────────────────────────
     $spyStmt = $db->prepare(
         'SELECT price_date, adj_close FROM prices
          WHERE ticker = ? AND price_date >= ? ORDER BY price_date ASC'
@@ -133,31 +182,29 @@ if ($hasData) {
     }
 
     // ── JSON für JavaScript ───────────────────────────────────────────────
-    $numTrades       = count($allBuyDatesList) + count($allSellDatesList);
-    $endDate         = end($simSundays) ?: date('Y-m-d');
-    $chartDates      = json_encode(array_keys($weeklyPortfolio));
-    $chartPortfolio  = json_encode(array_map('round', array_values($weeklyPortfolio)));
-    $chartBenchmark  = json_encode(array_map(
-        fn($d) => $weeklyBench[$d] ?? null,
-        array_keys($weeklyPortfolio)
-    ));
+    $numTrades        = count($allBuyDatesList) + count($allSellDatesList);
+    $endDate          = end($simSundays) ?: date('Y-m-d');
+    $chartDates       = json_encode(array_keys($weeklyPortfolio));
+    $chartPortfolio   = json_encode(array_map('round', array_values($weeklyPortfolio)));
+    $chartBenchmark   = json_encode(array_map(fn($d) => $weeklyBench[$d] ?? null, array_keys($weeklyPortfolio)));
     $allBuyDatesJson  = json_encode($allBuyDatesList);
     $allSellDatesJson = json_encode($allSellDatesList);
 
-    // ── EUR/USD historische Kurse für Chart-Umrechnung ─────────────────────
-    $eurRatesRaw   = $db->query("SELECT price_date, adj_close FROM prices WHERE ticker='EURUSD=X' ORDER BY price_date")->fetchAll(PDO::FETCH_KEY_PAIR);
-    $currentEurUsd = $eurRatesRaw ? (float)end($eurRatesRaw) : 1.10;
-    $eurDates      = array_keys($eurRatesRaw);
-    $nEur          = count($eurDates);
-    $eurIdx        = 0;
-    $chartEurRates = [];
-    foreach (array_keys($weeklyPortfolio) as $sunday) {
-        while ($eurIdx < $nEur - 1 && $eurDates[$eurIdx + 1] <= $sunday) $eurIdx++;
-        $chartEurRates[] = ($nEur > 0 && $eurDates[$eurIdx] <= $sunday)
-            ? (float)$eurRatesRaw[$eurDates[$eurIdx]] : $currentEurUsd;
+    // ── EUR/USD historische Kurse (S&P 500 und ETF) ──────────────────────────
+    if (!$isDax) {
+        $eurRatesRaw   = $db->query("SELECT price_date, adj_close FROM prices WHERE ticker='EURUSD=X' ORDER BY price_date")->fetchAll(PDO::FETCH_KEY_PAIR);
+        $currentEurUsd = $eurRatesRaw ? (float)end($eurRatesRaw) : 1.10;
+        $eurDates      = array_keys($eurRatesRaw);
+        $nEur          = count($eurDates);
+        $eurIdx        = 0;
+        $rates         = [];
+        foreach (array_keys($weeklyPortfolio) as $sunday) {
+            while ($eurIdx < $nEur - 1 && $eurDates[$eurIdx + 1] <= $sunday) $eurIdx++;
+            $rates[] = ($nEur > 0 && $eurDates[$eurIdx] <= $sunday)
+                ? (float)$eurRatesRaw[$eurDates[$eurIdx]] : $currentEurUsd;
+        }
+        $chartEurRates = $rates;   // als PHP-Array, json_encode() erfolgt in JS-Ausgabe
     }
-} else {
-    $currentEurUsd = 1.10;
 }
 ?>
 <!DOCTYPE html>
@@ -199,7 +246,7 @@ if ($hasData) {
 <?php $activePage = 'backtest'; include __DIR__ . '/inc_navbar.php'; ?>
 
 <div class="container-fluid px-4 py-4">
-  <h4 class="mb-4">Backtest — RSL Top-5 (wöchentlich)</h4>
+  <h4 class="mb-4">Backtest — <?= $isEtf ? 'ETF-Momentum Top-3 (monatlich)' : 'RSL Top-5 (wöchentlich)' ?></h4>
 
 <?php if (!$hasData): ?>
   <div class="alert" style="background:#1e3a5f;border:1px solid #1d4ed8;border-radius:12px">
@@ -225,13 +272,13 @@ if ($hasData) {
     <div class="col-6 col-md-2">
       <div class="card metric-card">
         <div class="metric-value" id="kpiOutperformance">—</div>
-        <div class="metric-label">Outperformance <span id="kpi-outperf-curr" class="text-muted" style="font-size:.65rem;text-transform:none;letter-spacing:0;opacity:.75;"></span></div>
+        <div class="metric-label">Outperformance<?php if ($isEtf): ?><sup style="color:#f59e0b;font-size:.7rem;">*</sup><?php endif; ?> <span id="kpi-outperf-curr" class="text-muted" style="font-size:.65rem;text-transform:none;letter-spacing:0;opacity:.75;"></span></div>
       </div>
     </div>
     <div class="col-6 col-md-2">
       <div class="card metric-card">
         <div class="metric-value text-muted" id="kpiBenchmark">—</div>
-        <div class="metric-label"><?= $isDax ? 'DAX (^GDAXI)' : 'S&amp;P 500 (SPY)' ?> <span id="kpi-bench-curr" class="text-muted" style="font-size:.65rem;text-transform:none;letter-spacing:0;opacity:.75;"></span></div>
+        <div class="metric-label"><?= $isEtf ? 'MSCI ACWI (ACWI)' : ($isDax ? 'DAX (^GDAXI)' : 'S&amp;P 500 (SPY)') ?> <span id="kpi-bench-curr" class="text-muted" style="font-size:.65rem;text-transform:none;letter-spacing:0;opacity:.75;"></span><?php if ($isEtf): ?><sup style="color:#f59e0b;font-size:.7rem;">*</sup><?php endif; ?></div>
       </div>
     </div>
     <div class="col-6 col-md-2">
@@ -252,7 +299,7 @@ if ($hasData) {
   <div class="row g-3">
     <div class="col-lg-6">
       <div class="card h-100">
-        <div class="card-header"><i class="bi bi-graph-up me-2"></i>Portfolio-Entwicklung vs. S&P 500</div>
+        <div class="card-header"><i class="bi bi-graph-up me-2"></i>Portfolio-Entwicklung vs. <?= $isEtf ? 'MSCI ACWI (ACWI)' : ($isDax ? 'DAX (^GDAXI)' : 'S&amp;P 500 (SPY)') ?></div>
         <div class="card-body" style="height:422px;">
           <canvas id="btChart"></canvas>
         </div>
@@ -275,6 +322,13 @@ if ($hasData) {
   </div>
 
 
+<?php if ($isEtf): ?>
+  <!-- Fußnote MSCI World Datenverfügbarkeit — Inhalt wird per JS gesetzt -->
+  <div id="bench-footnote" style="display:none; margin-top:1.5rem; padding:.75rem 1rem;
+       background:#fefce8; border:1px solid #fde68a; border-radius:10px;
+       font-size:.8rem; color:#78350f; line-height:1.6;">
+  </div>
+<?php endif; ?>
 <?php endif; ?>
 </div>
 
@@ -284,15 +338,18 @@ if ($hasData) {
 const allLabels    = <?= $chartDates ?>;
 const allPortfolio = <?= $chartPortfolio ?>;
 const allBenchmark = <?= $chartBenchmark ?>;
-const allEurRates  = <?= json_encode($chartEurRates ?? []) ?>;
+const allEurRates  = <?= json_encode(is_array($chartEurRates) ? $chartEurRates : []) ?>;
 const currentEurUsd = <?= round($currentEurUsd, 6) ?>;
 const endDate      = '<?= $endDate ?>';
 const allBuyDates  = <?= $allBuyDatesJson ?>;
 const allSellDates = <?= $allSellDatesJson ?>;
 const startCapital = <?= (int)$startCapital ?>;
+const _isDax       = <?= $isDax ? 'true' : 'false' ?>;
+const _isEtf       = <?= $isEtf ? 'true' : 'false' ?>;
+const _defStart    = _isEtf ? '2010-01-31' : '2010-01-04';
 
-// Currency toggle init
-const _currency = localStorage.getItem('currency') || 'USD';
+// Währungs-Toggle: DAX + ETF immer EUR; S&P 500 per localStorage
+const _currency = (_isDax || _isEtf) ? 'EUR' : (localStorage.getItem('currency') || 'USD');
 document.getElementById('btn-usd')?.classList.toggle('active', _currency === 'USD');
 document.getElementById('btn-eur')?.classList.toggle('active', _currency === 'EUR');
 document.getElementById('btn-usd')?.addEventListener('click', () => { localStorage.setItem('currency', 'USD'); location.reload(); });
@@ -329,7 +386,8 @@ function buildChart(startDate) {
   let startIdx = allLabels.findIndex(d => d >= startDate);
   if (startIdx < 0) startIdx = 0;
 
-  const currency  = localStorage.getItem('currency') || 'USD';
+  // DAX + ETF: EUR; S&P 500: localStorage
+  const currency  = (_isDax || _isEtf) ? 'EUR' : (localStorage.getItem('currency') || 'USD');
   const sym       = currency === 'EUR' ? '€' : '$';
 
   const labels    = allLabels.slice(startIdx);
@@ -337,32 +395,79 @@ function buildChart(startDate) {
   const rawBench  = allBenchmark.slice(startIdx);
   const eurSlice  = allEurRates.slice(startIdx);
 
-  // Auf tatsächliches Startkapital normieren + optionale EUR-Umrechnung
-  const base      = rawPort.find(v => v !== null) || 1;
-  const baseBench = rawBench.find(v => v !== null) || 1;
+  // Portfolio normieren
+  const base = rawPort.find(v => v !== null) || 1;
   const portfolio = rawPort.map((v, i) => {
     if (v === null) return null;
-    const usd = Math.round(v / base * startCapital);
-    return currency === 'EUR' ? Math.round(usd / (eurSlice[i] || currentEurUsd)) : usd;
+    const scaled = v / base * startCapital;
+    // ETF + DAX: Simulationswerte sind EUR-nativ → keine FX-Division
+    // S&P 500 EUR-Modus: USD-Werte in EUR umrechnen
+    if (_isEtf || _isDax) return Math.round(scaled);
+    return currency === 'EUR' ? Math.round(scaled / (eurSlice[i] || currentEurUsd)) : Math.round(scaled);
   });
-  const benchmark = rawBench.map((v, i) => {
-    if (v === null) return null;
-    const usd = Math.round(v / baseBench * startCapital);
-    return currency === 'EUR' ? Math.round(usd / (eurSlice[i] || currentEurUsd)) : usd;
-  });
+
+  // Benchmark normieren
+  const firstBenchIdx = rawBench.findIndex(v => v !== null);
+  const baseBench     = rawBench.find(v => v !== null) || 1;
+  let benchmark;
+  if (_isEtf) {
+    // ETF: Benchmark immer mit per-Datenpunkt EUR/USD-Umrechnung + Normierung,
+    // damit Startpunkt und Chart konsistent mit Portfolio (beide in EUR, beide bei startCapital).
+    const anchorIdx  = firstBenchIdx >= 0 ? firstBenchIdx : 0;
+    const anchorPort = portfolio[anchorIdx] != null ? portfolio[anchorIdx] : startCapital;
+    const eurAtAnchor = eurSlice[anchorIdx] > 0 ? eurSlice[anchorIdx] : currentEurUsd;
+    benchmark = rawBench.map((v, i) => {
+      if (v === null) return null;
+      const eurI = eurSlice[i] > 0 ? eurSlice[i] : currentEurUsd;
+      return Math.round(v / baseBench * anchorPort * (eurAtAnchor / eurI));
+    });
+  } else {
+    // S&P 500 / DAX: Standard-Normierung auf Startkapital mit optionaler EUR-Umrechnung
+    benchmark = rawBench.map((v, i) => {
+      if (v === null) return null;
+      const usd = Math.round(v / baseBench * startCapital);
+      return currency === 'EUR' ? Math.round(usd / (eurSlice[i] || currentEurUsd)) : usd;
+    });
+  }
 
   // --- KPI Berechnung ---
   const endPort  = [...rawPort].reverse().find(v => v !== null);
   const endBench = [...rawBench].reverse().find(v => v !== null);
-  // EUR/USD-Kurs zu Beginn und Ende des gefilterten Zeitraums
   const eurStart = eurSlice.find(v => v > 0) || currentEurUsd;
   const eurEnd   = [...eurSlice].reverse().find(v => v > 0) || currentEurUsd;
-  // Bei EUR: Wechselkursveränderung in Rendite einrechnen
-  const fxFactor = currency === 'EUR' ? (eurStart / eurEnd) : 1;
-  const totalReturn  = base  > 0 ? ((endPort  / base)  * fxFactor - 1) * 100 : 0;
-  const benchReturn  = baseBench > 0 ? ((endBench / baseBench) * fxFactor - 1) * 100 : 0;
-  const outperf      = totalReturn - benchReturn;
-  const maxDD        = calcMaxDrawdown(rawPort);
+  // ETF: Simulationswerte sind EUR-Basiseinheiten (kein FX-Faktor), wie DAX
+  // S&P 500 im EUR-Modus: FX-Faktor (USD→EUR) anwenden
+  const fxFactor = (!_isEtf && currency === 'EUR') ? (eurStart / eurEnd) : 1;
+  const maxDD    = calcMaxDrawdown(rawPort);
+
+  // Gesamt-Rendite Portfolio (voller Zeitraum ab Sim-Start)
+  const totalReturn = base > 0 ? ((endPort / base) * fxFactor - 1) * 100 : 0;
+
+  // Benchmark-Rendite + Outperformance:
+  // Für ETF startet MSCI ACWI erst später → nur gemeinsamen Zeitraum vergleichen
+  let benchReturn, outperf, benchStartLabel = null;
+  if (_isEtf && firstBenchIdx > 0) {
+    // Gemeinsamer Zeitraum ab firstBenchIdx (= erster ACWI-Datenpunkt)
+    // Portfolio in EUR-Basiseinheiten — kein FX-Faktor nötig
+    const portCommonStart  = portfolio[firstBenchIdx];
+    const portCommonEnd    = [...portfolio].reverse().find(v => v !== null);
+    const portReturnCommon = portCommonStart > 0 ? (portCommonEnd / portCommonStart - 1) * 100 : 0;
+
+    // ACWI EUR-Rendite: USD-Preisrendite × FX-Änderung (nur für den Benchmark-Zeitraum)
+    const rawBenchEnd    = [...rawBench].reverse().find(v => v !== null);
+    const eurAtBenchStart = (eurSlice[firstBenchIdx] > 0 ? eurSlice[firstBenchIdx] : currentEurUsd);
+    const eurAtEnd        = ([...eurSlice].reverse().find(v => v > 0) || currentEurUsd);
+    const benchFxFactor   = currency === 'EUR' ? (eurAtBenchStart / eurAtEnd) : 1;
+    benchReturn  = baseBench > 0 ? ((rawBenchEnd / baseBench) * benchFxFactor - 1) * 100 : 0;
+    outperf      = portReturnCommon - benchReturn;
+    benchStartLabel = labels[firstBenchIdx]; // z.B. "2009-10-30"
+  } else {
+    // S&P 500 / DAX / ETF (firstBenchIdx=0): voller gemeinsamer Zeitraum
+    // Benchmark-FX: ACWI/SPY sind USD → auch für ETF FX anwenden (Portfolio ist EUR-nativ, Benchmark nicht)
+    const benchFxElse = (_isDax) ? 1 : (currency === 'EUR' ? (eurStart / eurEnd) : 1);
+    benchReturn = baseBench > 0 ? ((endBench / baseBench) * benchFxElse - 1) * 100 : 0;
+    outperf     = totalReturn - benchReturn;
+  }
 
   const kpiReturn = document.getElementById('kpiReturn');
   if (kpiReturn) {
@@ -379,6 +484,18 @@ function buildChart(startDate) {
   }
   const kpiBench = document.getElementById('kpiBenchmark');
   if (kpiBench) kpiBench.textContent = fmtPct(benchReturn);
+
+  // Fußnoten-Hinweis für ETF (MSCI ACWI erst ab Benchmark-Startdatum)
+  const benchNote = document.getElementById('bench-footnote');
+  if (benchNote && benchStartLabel) {
+    const mon = formatMonthYear(benchStartLabel);
+    benchNote.innerHTML =
+      '<sup>*</sup> MSCI ACWI (iShares ACWI ETF) verfügbar ab ' + mon +
+      ' — Outperformance und Benchmark-Rendite beziehen sich ausschließlich auf diesen gemeinsamen Zeitraum. ' +
+      'Vor ' + mon + ' existierte kein MSCI-ACWI-ETF mit ausreichender Kurshistorie auf Yahoo Finance. ' +
+      'Alle Werte in EUR (inkl. USD/EUR-Währungseffekt).';
+    benchNote.style.display = 'block';
+  }
 
   // Update Zeitraum box
   const zeitraum = document.getElementById('zeitraumValue');
@@ -545,10 +662,10 @@ function buildChart(startDate) {
       labels,
       datasets: [
         {
-          label: 'RSL Top-5 Portfolio',
+          label: _isEtf ? 'ETF Top-3 Portfolio' : 'RSL Top-5 Portfolio',
           data: portfolio,
-          borderColor: '#4ade80',
-          backgroundColor: 'rgba(74,222,128,.08)',
+          borderColor: _isEtf ? '#6ee7b7' : '#4ade80',
+          backgroundColor: _isEtf ? 'rgba(110,231,183,.08)' : 'rgba(74,222,128,.08)',
           fill: true,
           tension: 0.3,
           borderWidth: 2,
@@ -556,7 +673,7 @@ function buildChart(startDate) {
           pointHoverRadius: 4,
         },
         {
-          label: '<?= $isDax ? 'DAX (^GDAXI)' : 'S&P 500 (SPY)' ?>',
+          label: _isEtf ? 'MSCI ACWI (ACWI)' : '<?= $isDax ? 'DAX (^GDAXI)' : 'S&P 500 (SPY)' ?>',
           data: benchmark,
           borderColor: '#60a5fa',
           backgroundColor: 'transparent',
@@ -616,19 +733,19 @@ function buildChart(startDate) {
   });
 }
 
-// Start-Datum und Kapital aus localStorage mit URL-Params synchronisieren
-const simStart   = localStorage.getItem('sim_start_date');
-const simCapital = localStorage.getItem('sim_capital');
+// Wenn start_date in der URL fehlt: mit Standardwert ergänzen und neu laden
 const urlParams  = new URLSearchParams(window.location.search);
 const urlStart   = urlParams.get('start_date');
 const urlCapital = urlParams.get('capital');
 
-const startMismatch   = simStart   && simStart !== urlStart;
-const capitalMismatch = simCapital && String(parseInt(simCapital)) !== urlCapital;
-
-if (startMismatch || capitalMismatch) {
-  const p = new URLSearchParams();
-  if (simStart)   p.set('start_date', simStart);
+if (!urlStart) {
+  // Kein start_date in URL → Universe-spezifischen Standard setzen
+  const _startKey = 'sim_start_date_' + (<?= json_encode($universe) ?>);
+  const simStart = localStorage.getItem(_startKey) || _defStart;
+  // ETF: Kapital immer EUR 50.000 (localStorage kann veralteten Wert enthalten)
+  const simCapital = _isEtf ? 50000 : localStorage.getItem('sim_capital');
+  const p = new URLSearchParams(urlParams);
+  p.set('start_date', simStart);
   if (simCapital) p.set('capital', parseInt(simCapital));
   window.location.replace('backtest.php?' + p.toString());
 } else {

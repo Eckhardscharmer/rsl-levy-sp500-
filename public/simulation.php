@@ -5,8 +5,9 @@ $db = getDB();
 
 // ── Universe ───────────────────────────────────────────────────────────────
 $universe = $_GET['universe'] ?? 'sp500';
-if (!in_array($universe, ['sp500', 'dax'])) $universe = 'sp500';
+if (!in_array($universe, ['sp500', 'dax', 'etf'])) $universe = 'sp500';
 $isDax    = ($universe === 'dax');
+$isEtf    = ($universe === 'etf');
 
 // ── M&A-Flags (aktuell aktive Übernahme-Kandidaten) ────────────────────────
 $maFlagged = [];
@@ -17,8 +18,10 @@ foreach ($db->query('SELECT ticker, headline FROM m_and_a_flags WHERE is_active 
 
 // ── Parameter ──────────────────────────────────────────────────────────────
 $startCapital = max(1000, (float)($_GET['capital'] ?? 50000));
-$startDate    = $_GET['start_date'] ?? '2024-01-01';
-$minDate      = '2010-01-04';
+// ETF + DAX: Kapital auf 10.000er runden (Nutzer gibt EUR ein, Slider-Schritte = 10.000)
+if ($isEtf || $isDax) $startCapital = max(10000, round($startCapital / 10000) * 10000);
+$minDate      = $isEtf ? '2000-01-31' : '2010-01-04';
+$startDate    = $_GET['start_date'] ?? ($isEtf ? '2010-01-31' : '2024-01-01');
 $maxDate      = $db->query("SELECT MAX(ranking_date) FROM rsl_rankings WHERE universe='$universe'")->fetchColumn() ?: date('Y-m-d');
 if ($startDate < $minDate) $startDate = $minDate;
 if ($startDate > $maxDate) $startDate = $maxDate;
@@ -41,7 +44,7 @@ $sliderCurDays  = (int)(($currentTs - $minTs) / 86400);
 // ── Alle Rankings ab Startdatum laden (eine Query) ──────────────────────────
 $stmt = $db->prepare(
     'SELECT r.ranking_date, r.ticker, r.sector, r.current_price, r.rsl, r.rank_overall,
-            COALESCE(s.name, r.ticker) AS company
+            r.is_selected, COALESCE(s.name, r.ticker) AS company
      FROM rsl_rankings r
      LEFT JOIN stocks s ON s.ticker = r.ticker
      WHERE r.ranking_date >= ? AND r.universe = ?
@@ -57,121 +60,204 @@ foreach ($allRows as $row) {
 }
 $sundays = array_keys($byDate);
 
-// ── Simulation (identische Logik wie Backtest) ─────────────────────────────
-// HOLD_RANK: dynamisch je nach Universe und Datum (wird im Loop neu berechnet)
+// ── Simulation ─────────────────────────────────────────────────────────────
 const TOP_N_SIM = 5;
 
 $cash                = $startCapital;
-$holdings            = [];   // ticker → [shares, buy_price, sector, rsl_buy, company]
+$holdings            = [];
 $snapshots           = [];
-$lastSnapshotMktVals = [];   // ticker → mkt_val aus letztem Snapshot (für realisierten GuV)
+$lastSnapshotMktVals = [];
 
-foreach ($sundays as $i => $sunday) {
-    $weekRankings = $byDate[$sunday];
-    $rankByTicker = array_column($weekRankings, null, 'ticker');
+// WKN-Mapping für ETF-Instrumente (Index-Ticker → WKN des real handelbaren ETF)
+$etfWknMap = [
+    '^GSPC'  => 'A0YEDL',   // iShares Core S&P 500 UCITS ETF (SXR8)
+    '^NDX'   => '801498',   // Invesco EQQQ Nasdaq-100 UCITS ETF
+    '^STOXX' => '263530',   // iShares STOXX Europe 600 UCITS ETF (EXSA)
+    '^N225'  => 'A0F5EB',   // Xtrackers MSCI Japan UCITS ETF (DBXJ)
+    'EEM'    => 'A0HGZT',   // Xtrackers MSCI Emerging Markets UCITS ETF (XMME)
+    'GC=F'   => 'A0S9GB',   // Xetra-Gold
+    'AGG'    => 'A0RFED',   // iShares Core Global Govt Bond UCITS ETF
+    'SHY'    => 'DBX0AN',   // Xtrackers EUR Overnight Rate Swap ETF (XEON)
+];
 
-    $saleProceeds   = [];
-    $exitedThisWeek = [];  // ticker → ['net_proceeds', 'realized_pnl']
+if ($isEtf) {
+    // ETF: monatliches Full-Rebalancing, Top 3 (is_selected), gleiche Gewichtung
+    $etfNameMap = [
+        '^GSPC'  => 'USA Large Caps (S&P 500)',  '^NDX'   => 'USA Wachstum (Nasdaq-100)',
+        '^STOXX' => 'Europa (STOXX 600)',         '^N225'  => 'Japan (Nikkei 225)',
+        'EEM'    => 'Emerging Markets',           'GC=F'   => 'Gold',
+        'AGG'    => 'Staatsanleihen',             'SHY'    => 'Cash / Geldmarkt',
+    ];
+    foreach ($sundays as $i => $monthEnd) {
+        $monthRankings = $byDate[$monthEnd];
+        $rankByTicker  = array_column($monthRankings, null, 'ticker');
 
-    // VERKAUF: Rang > Schwelle oder nicht mehr im Index
-    $holdRank = $isDax ? ($sunday >= '2021-09-20' ? 10 : 7) : 125;
-    foreach (array_keys($holdings) as $ticker) {
-        $rank = isset($rankByTicker[$ticker])
-            ? (int)$rankByTicker[$ticker]['rank_overall']
-            : PHP_INT_MAX;
-        if ($rank > $holdRank) {
-            $price  = (float)($rankByTicker[$ticker]['current_price'] ?? $holdings[$ticker]['buy_price']);
-            $shares = $holdings[$ticker]['shares'];
-            $gross  = $shares * $price;
-            $net    = $gross;
-            $cash  += $net;
-            $saleProceeds[] = $net;
+        $targetTickers = [];
+        foreach ($monthRankings as $r) {
+            if ($r['is_selected']) $targetTickers[$r['ticker']] = $r;
+        }
 
-            // Realisierter GuV = Verkaufserlös minus Wert im letzten Snapshot
-            $prevVal = $lastSnapshotMktVals[$ticker] ?? ($holdings[$ticker]['buy_price'] * $shares);
-            $exitedThisWeek[$ticker] = [
-                'net_proceeds'  => $net,
-                'realized_pnl'  => $net - $prevVal,
+        // Realisierter GuV: Gesamtwert vor Rebalancing
+        $totalBefore = $cash;
+        $exitedThisMonth = [];
+        foreach ($holdings as $ticker => $h) {
+            $price = (float)($rankByTicker[$ticker]['current_price'] ?? $h['buy_price']);
+            $mktVal = $h['shares'] * $price;
+            $totalBefore += $mktVal;
+            $prevVal = $lastSnapshotMktVals[$ticker] ?? ($h['buy_price'] * $h['shares']);
+            if (!isset($targetTickers[$ticker])) {
+                $exitedThisMonth[$ticker] = ['net_proceeds' => $mktVal, 'realized_pnl' => $mktVal - $prevVal];
+            }
+        }
+
+        $prevHoldings = array_keys($holdings);
+        $cash     = $totalBefore;
+        $holdings = [];
+
+        $newThisMonth = [];
+        $n = count($targetTickers);
+        if ($n > 0) {
+            $perSlot = $cash / $n;
+            foreach ($targetTickers as $ticker => $r) {
+                $price = (float)$r['current_price'];
+                if ($price <= 0) continue;
+                $cash -= $perSlot;
+                $holdings[$ticker] = [
+                    'shares'    => $perSlot / $price,
+                    'buy_price' => $price,
+                    'sector'    => $r['sector'] ?? '',
+                    'rsl_buy'   => (float)$r['rsl'],
+                    'company'   => $etfNameMap[$ticker] ?? $ticker,
+                ];
+                if (!in_array($ticker, $prevHoldings)) $newThisMonth[] = $ticker;
+            }
+        }
+
+        $invested = 0;
+        $snap     = [];
+        foreach ($holdings as $ticker => $h) {
+            $price  = (float)($rankByTicker[$ticker]['current_price'] ?? $h['buy_price']);
+            $mktVal = $h['shares'] * $price;
+            $invested += $mktVal;
+            $snap[$ticker] = [
+                'ticker'  => $ticker,
+                'company' => $h['company'],
+                'sector'  => $h['sector'],
+                'mkt_val' => $mktVal,
+                'rsl'     => (float)($rankByTicker[$ticker]['rsl'] ?? $h['rsl_buy']),
+                'rank'    => (int)($rankByTicker[$ticker]['rank_overall'] ?? 99),
             ];
-            unset($holdings[$ticker]);
+        }
+        $portfolioValue = $cash + $invested;
+        foreach ($snap as &$s) {
+            $s['weight'] = $portfolioValue > 0 ? $s['mkt_val'] / $portfolioValue * 100 : 0;
+        }
+        unset($s);
+        foreach ($snap as $ticker => $s) $lastSnapshotMktVals[$ticker] = $s['mkt_val'];
+
+        $isLast = ($i === count($sundays) - 1);
+        if (!empty($newThisMonth) || !empty($exitedThisMonth) || $isLast) {
+            $snapshots[] = [
+                'date'      => $monthEnd,
+                'holdings'  => $snap,
+                'new'       => $newThisMonth,
+                'exited'    => $exitedThisMonth,
+                'pv'        => $portfolioValue,
+                'no_change' => empty($newThisMonth) && empty($exitedThisMonth),
+            ];
         }
     }
+} else {
+    // S&P 500 / DAX: wöchentlich, Top 5, Sektordiversifikation
+    foreach ($sundays as $i => $sunday) {
+        $weekRankings = $byDate[$sunday];
+        $rankByTicker = array_column($weekRankings, null, 'ticker');
 
-    // KAUF: Slot-Kapital (kein Nachschuss, Erlös wird 1:1 reinvestiert)
-    $vacancies   = TOP_N_SIM - count($holdings);
-    $heldSectors = array_column(array_values($holdings), 'sector');
-    $cashPerSlot = $vacancies > 0 ? $cash / $vacancies : 0;
-    $newThisWeek = [];
+        $saleProceeds   = [];
+        $exitedThisWeek = [];
 
-    $isCurrentWeek = ($sunday === end($sundays));
-    foreach ($weekRankings as $stock) {
-        if ($vacancies <= 0) break;
-        if (isset($holdings[$stock['ticker']])) continue;
-        // M&A-Filter: nur für die aktuelle (letzte) Woche anwenden
-        if ($isCurrentWeek && isset($maFlagged[$stock['ticker']])) continue;
-        $sector = $stock['sector'] ?? 'Unknown';
-        if (in_array($sector, $heldSectors)) continue;
-        $price = (float)$stock['current_price'];
-        if ($price <= 0) continue;
+        $holdRank = $isDax ? ($sunday >= '2021-09-20' ? 10 : 7) : 125;
+        foreach (array_keys($holdings) as $ticker) {
+            $rank = isset($rankByTicker[$ticker])
+                ? (int)$rankByTicker[$ticker]['rank_overall']
+                : PHP_INT_MAX;
+            if ($rank > $holdRank) {
+                $price  = (float)($rankByTicker[$ticker]['current_price'] ?? $holdings[$ticker]['buy_price']);
+                $shares = $holdings[$ticker]['shares'];
+                $gross  = $shares * $price;
+                $net    = $gross;
+                $cash  += $net;
+                $saleProceeds[] = $net;
+                $prevVal = $lastSnapshotMktVals[$ticker] ?? ($holdings[$ticker]['buy_price'] * $shares);
+                $exitedThisWeek[$ticker] = ['net_proceeds' => $net, 'realized_pnl' => $net - $prevVal];
+                unset($holdings[$ticker]);
+            }
+        }
 
-        $slotBudget = !empty($saleProceeds) ? array_shift($saleProceeds) : $cashPerSlot;
-        if ($slotBudget < 1) continue;
+        $vacancies   = TOP_N_SIM - count($holdings);
+        $heldSectors = array_column(array_values($holdings), 'sector');
+        $cashPerSlot = $vacancies > 0 ? $cash / $vacancies : 0;
+        $newThisWeek = [];
 
-        $gross  = $slotBudget;
-        $shares = $gross / $price;
-        $cash  -= $slotBudget;
+        $isCurrentWeek = ($sunday === end($sundays));
+        foreach ($weekRankings as $stock) {
+            if ($vacancies <= 0) break;
+            if (isset($holdings[$stock['ticker']])) continue;
+            if ($isCurrentWeek && isset($maFlagged[$stock['ticker']])) continue;
+            $sector = $stock['sector'] ?? 'Unknown';
+            if (in_array($sector, $heldSectors)) continue;
+            $price = (float)$stock['current_price'];
+            if ($price <= 0) continue;
+            $slotBudget = !empty($saleProceeds) ? array_shift($saleProceeds) : $cashPerSlot;
+            if ($slotBudget < 1) continue;
+            $shares = $slotBudget / $price;
+            $cash  -= $slotBudget;
+            $holdings[$stock['ticker']] = [
+                'shares'    => $shares,
+                'buy_price' => $price,
+                'sector'    => $sector,
+                'rsl_buy'   => (float)$stock['rsl'],
+                'company'   => $stock['company'],
+            ];
+            $newThisWeek[] = $stock['ticker'];
+            $heldSectors[] = $sector;
+            $vacancies--;
+        }
 
-        $holdings[$stock['ticker']] = [
-            'shares'    => $shares,
-            'buy_price' => $price,
-            'sector'    => $sector,
-            'rsl_buy'   => (float)$stock['rsl'],
-            'company'   => $stock['company'],
-        ];
-        $newThisWeek[] = $stock['ticker'];
-        $heldSectors[] = $sector;
-        $vacancies--;
-    }
+        $invested = 0;
+        $snap     = [];
+        foreach ($holdings as $ticker => $h) {
+            $price   = (float)($rankByTicker[$ticker]['current_price'] ?? $h['buy_price']);
+            $mktVal  = $h['shares'] * $price;
+            $invested += $mktVal;
+            $snap[$ticker] = [
+                'ticker'  => $ticker,
+                'company' => $rankByTicker[$ticker]['company'] ?? $h['company'],
+                'sector'  => $h['sector'],
+                'mkt_val' => $mktVal,
+                'rsl'     => (float)($rankByTicker[$ticker]['rsl'] ?? $h['rsl_buy']),
+                'rank'    => (int)($rankByTicker[$ticker]['rank_overall'] ?? 999),
+            ];
+        }
+        $portfolioValue = $cash + $invested;
+        foreach ($snap as &$s) {
+            $s['weight'] = $portfolioValue > 0 ? $s['mkt_val'] / $portfolioValue * 100 : 0;
+        }
+        unset($s);
+        uasort($snap, fn($a, $b) => $b['rsl'] <=> $a['rsl']);
+        foreach ($snap as $ticker => $s) $lastSnapshotMktVals[$ticker] = $s['mkt_val'];
 
-    // Portfolio-Wert & angereicherte Holdings für Snapshot
-    $invested = 0;
-    $snap     = [];
-    foreach ($holdings as $ticker => $h) {
-        $price   = (float)($rankByTicker[$ticker]['current_price'] ?? $h['buy_price']);
-        $mktVal  = $h['shares'] * $price;
-        $invested += $mktVal;
-        $snap[$ticker] = [
-            'ticker'  => $ticker,
-            'company' => $rankByTicker[$ticker]['company'] ?? $h['company'],
-            'sector'  => $h['sector'],
-            'mkt_val' => $mktVal,
-            'rsl'     => (float)($rankByTicker[$ticker]['rsl'] ?? $h['rsl_buy']),
-            'rank'    => (int)($rankByTicker[$ticker]['rank_overall'] ?? 999),
-        ];
-    }
-    $portfolioValue = $cash + $invested;
-
-    foreach ($snap as $t => &$s) {
-        $s['weight'] = $portfolioValue > 0 ? $s['mkt_val'] / $portfolioValue * 100 : 0;
-    }
-    unset($s);
-    uasort($snap, fn($a, $b) => $b['rsl'] <=> $a['rsl']);
-
-    // lastSnapshotMktVals für nächste Woche aktualisieren
-    foreach ($snap as $ticker => $s) {
-        $lastSnapshotMktVals[$ticker] = $s['mkt_val'];
-    }
-
-    $isLast = ($i === count($sundays) - 1);
-    if (!empty($newThisWeek) || !empty($exitedThisWeek) || $isLast) {
-        $snapshots[] = [
-            'date'      => $sunday,
-            'holdings'  => $snap,
-            'new'       => $newThisWeek,
-            'exited'    => $exitedThisWeek,   // jetzt dict mit realized_pnl
-            'pv'        => $portfolioValue,
-            'no_change' => empty($newThisWeek) && empty($exitedThisWeek),
-        ];
+        $isLast = ($i === count($sundays) - 1);
+        if (!empty($newThisWeek) || !empty($exitedThisWeek) || $isLast) {
+            $snapshots[] = [
+                'date'      => $sunday,
+                'holdings'  => $snap,
+                'new'       => $newThisWeek,
+                'exited'    => $exitedThisWeek,
+                'pv'        => $portfolioValue,
+                'no_change' => empty($newThisWeek) && empty($exitedThisWeek),
+            ];
+        }
     }
 }
 
@@ -296,7 +382,7 @@ $endEurUsd   = (float)($stmtEur->fetchColumn() ?: $currentEurUsd);
                 </label>
                 <div class="input-group">
                   <span class="input-group-text" id="capital-currency-label"
-                        style="background:#eff6ff;border-color:#bfdbfe;color:#1e40af;font-weight:700;font-size:.9rem;"><?= $isDax ? '€ EUR' : 'USD' ?></span>
+                        style="background:#eff6ff;border-color:#bfdbfe;color:#1e40af;font-weight:700;font-size:.9rem;"><?= ($isDax || $isEtf) ? '€ EUR' : 'USD' ?></span>
                   <input type="text" class="form-control" id="inputCapitalDisplay"
                          value="<?= number_format($startCapital, 0, ',', '.') ?>"
                          style="font-size:1.15rem;font-weight:700;text-align:right;border-color:#bfdbfe;color:#1e3a8a;letter-spacing:.01em;"
@@ -335,7 +421,7 @@ $endEurUsd   = (float)($stmtEur->fetchColumn() ?: $currentEurUsd);
               <div class="kpi-label">Kapitalstand</div>
               <div class="kpi-value <?= $finalCapital >= $startCapital ? 'text-success' : 'text-danger' ?>" id="kpi-kapital-val" data-usd="<?= round($finalCapital) ?>">
                 <?= number_format($finalCapital, 0, ',', '.') ?>
-                <small style="font-size:.8rem;" id="kpi-kapital-sym"><?= $isDax ? 'EUR' : 'USD' ?></small>
+                <small style="font-size:.8rem;" id="kpi-kapital-sym"><?= ($isDax || $isEtf) ? 'EUR' : 'USD' ?></small>
               </div>
             </div>
 
@@ -416,11 +502,11 @@ $endEurUsd   = (float)($stmtEur->fetchColumn() ?: $currentEurUsd);
             <thead>
               <tr>
                 <th style="width:18px;"></th>
-                <th>Ticker</th>
-                <th>Unternehmen</th>
+                <th><?= $isEtf ? 'WKN' : 'Ticker' ?></th>
+                <th><?= $isEtf ? 'ETF' : 'Unternehmen' ?></th>
                 <th>Sektor</th>
                 <th class="text-end">Gewicht</th>
-                <th class="text-end sim-th-betrag">Betrag in <?= $isDax ? 'EUR' : 'USD' ?></th>
+                <th class="text-end sim-th-betrag">Betrag in <?= ($isDax || $isEtf) ? 'EUR' : 'USD' ?></th>
                 <th class="text-end">RSL Score</th>
               </tr>
             </thead>
@@ -428,6 +514,7 @@ $endEurUsd   = (float)($stmtEur->fetchColumn() ?: $currentEurUsd);
               <?php foreach ($snap['holdings'] as $h):
                 $isNew    = isset($newSet[$h['ticker']]);
                 $rowClass = $isNew ? 'row-new' : 'row-normal';
+                $displayId = $isEtf ? ($etfWknMap[$h['ticker']] ?? $h['ticker']) : $h['ticker'];
               ?>
               <tr class="<?= $rowClass ?>">
                 <td class="text-center ps-3">
@@ -437,7 +524,7 @@ $endEurUsd   = (float)($stmtEur->fetchColumn() ?: $currentEurUsd);
                     <span class="dot dot-hold"></span>
                   <?php endif; ?>
                 </td>
-                <td><span class="ticker-badge"><?= htmlspecialchars($h['ticker']) ?></span></td>
+                <td><span class="ticker-badge"><?= htmlspecialchars($displayId) ?></span></td>
                 <td style="color:#374151;"><?= htmlspecialchars($h['company']) ?></td>
                 <td style="color:#6c757d;font-size:.80rem;"><?= htmlspecialchars($h['sector']) ?></td>
                 <td class="text-end" style="color:#374151;"><?= number_format($h['weight'], 1, ',', '.') ?>%</td>
@@ -449,13 +536,17 @@ $endEurUsd   = (float)($stmtEur->fetchColumn() ?: $currentEurUsd);
               <?php endforeach; ?>
 
               <!-- Ausgeschiedene Positionen -->
-              <?php foreach ($snap['exited'] as $exitTicker => $exitData): ?>
+              <?php foreach ($snap['exited'] as $exitTicker => $exitData):
+                $exitDisplayId   = $isEtf ? ($etfWknMap[$exitTicker] ?? $exitTicker) : $exitTicker;
+                $exitCompanyName = $isEtf ? ($etfNameMap[$exitTicker] ?? $exitTicker) : '';
+              ?>
               <tr class="row-exited">
                 <td class="text-center ps-3">
                   <span class="dot dot-exit"></span>
                 </td>
-                <td><span class="ticker-badge" style="color:#9ca3af;"><?= htmlspecialchars($exitTicker) ?></span></td>
-                <td colspan="5" style="font-size:.80rem;color:#9ca3af;">Position geschlossen</td>
+                <td><span class="ticker-badge" style="color:#9ca3af;"><?= htmlspecialchars($exitDisplayId) ?></span></td>
+                <td style="font-size:.80rem;color:#9ca3af;"><?= $isEtf ? htmlspecialchars($exitCompanyName) : '' ?></td>
+                <td colspan="<?= $isEtf ? '4' : '5' ?>" style="font-size:.80rem;color:#9ca3af;">Position geschlossen</td>
               </tr>
               <?php endforeach; ?>
             </tbody>
@@ -480,9 +571,10 @@ $endEurUsd   = (float)($stmtEur->fetchColumn() ?: $currentEurUsd);
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-// Currency toggle — DAX ist immer EUR, keine Konvertierung
+// Currency: DAX und ETF immer EUR; S&P 500 per localStorage-Toggle
 const _isDax        = <?= $isDax ? 'true' : 'false' ?>;
-const _currency     = _isDax ? 'EUR' : (localStorage.getItem('currency') || 'USD');
+const _isEtf        = <?= $isEtf ? 'true' : 'false' ?>;
+const _currency     = (_isDax || _isEtf) ? 'EUR' : (localStorage.getItem('currency') || 'USD');
 const currentEurUsd = <?= round($currentEurUsd, 6) ?>;
 const startEurUsd   = <?= round($startEurUsd, 6) ?>;
 const endEurUsd     = <?= round($endEurUsd, 6) ?>;
@@ -501,23 +593,26 @@ if (kpiChangeCurr) kpiChangeCurr.textContent = _currLabelSim;
   const el = document.getElementById('kpi-change-val');
   if (!el) return;
   let pct;
-  if (!_isDax && _currency === 'EUR') {
-    // S&P 500 EUR-Rendite: USD-Werte mit Währungseffekt umrechnen
-    const finalUsd = parseFloat(el.dataset.finalUsd);
-    const startUsd = parseFloat(el.dataset.startUsd);
-    const finalEur = finalUsd / endEurUsd;
-    const startEur = startUsd / startEurUsd;
+  if (_isEtf) {
+    // ETF: Simulationswerte sind EUR-Basiseinheiten — keine FX-Umrechnung nötig
+    const finalEur = parseFloat(el.dataset.finalUsd); // bereits in EUR-Einheiten
+    const startEur = parseFloat(el.dataset.startUsd); // bereits in EUR-Einheiten
+    pct = (finalEur / startEur - 1) * 100;
+  } else if (!_isDax && _currency === 'EUR') {
+    // S&P 500 im EUR-Modus: beide Werte in USD, historisch in EUR umrechnen
+    const finalEur = parseFloat(el.dataset.finalUsd) / endEurUsd;
+    const startEur = parseFloat(el.dataset.startUsd) / startEurUsd;
     pct = (finalEur / startEur - 1) * 100;
   } else {
-    // DAX oder USD: Rendite direkt aus Simulation (bereits in Heimwährung)
+    // DAX oder S&P 500 in USD: Rendite direkt aus Simulation
     pct = parseFloat(el.dataset.pctUsd);
   }
   el.textContent = (pct >= 0 ? '+' : '') + pct.toLocaleString('de-DE', {minimumFractionDigits:1, maximumFractionDigits:1}) + '%';
   el.className = 'kpi-value ' + (pct >= 0 ? 'text-success' : 'text-danger');
 })();
 
-if (!_isDax && _currency === 'EUR') {
-  // S&P 500: USD-Werte in EUR umrechnen
+if (!_isDax && !_isEtf && _currency === 'EUR') {
+  // S&P 500 im EUR-Modus: USD-Werte in EUR umrechnen
   const kpiVal = document.getElementById('kpi-kapital-val');
   const kpiSym = document.getElementById('kpi-kapital-sym');
   if (kpiVal && kpiVal.dataset.usd) {
@@ -531,7 +626,7 @@ if (!_isDax && _currency === 'EUR') {
     if (!isNaN(usd)) el.textContent = Math.round(usd / endEurUsd).toLocaleString('de-DE');
   });
 }
-// DAX: Werte sind bereits in EUR — nur Zahlen formatieren, kein Umrechnen nötig
+// DAX + ETF: Simulationswerte sind bereits in EUR-Basiseinheiten — keine Umrechnung nötig
 
 (function () {
   const displayInput   = document.getElementById('inputCapitalDisplay');
@@ -542,12 +637,12 @@ if (!_isDax && _currency === 'EUR') {
   const form           = document.querySelector('form');
   const params         = new URLSearchParams(window.location.search);
 
-  // Währungslabel am Input aktualisieren (DAX: fix EUR, S&P 500: je nach Toggle)
+  // Währungslabel am Input aktualisieren
   const currLabel = document.getElementById('capital-currency-label');
-  if (currLabel && !_isDax) currLabel.textContent = _currency === 'EUR' ? '€ EUR' : '$ USD';
+  if (currLabel && !_isDax && !_isEtf) currLabel.textContent = _currency === 'EUR' ? '€ EUR' : '$ USD';
 
-  // EUR: angezeigte USD-Werte in EUR umrechnen (nur S&P 500)
-  if (!_isDax && _currency === 'EUR') {
+  // S&P 500 im EUR-Modus: gespeicherten USD-Wert in EUR umrechnen für Anzeige
+  if (!_isDax && !_isEtf && _currency === 'EUR') {
     const usdVal = parseInt(hiddenCapital.value, 10) || 50000;
     displayInput.value = formatNum(Math.round(usdVal / currentEurUsd));
   }
@@ -571,29 +666,34 @@ if (!_isDax && _currency === 'EUR') {
   }
 
   // Display formatieren und Hidden-Field synchronisieren
-  // DAX: intern EUR, keine Konvertierung; S&P 500: intern USD
+  // DAX + ETF: Kapital nativ in EUR, keine Konvertierung; S&P 500 EUR-Modus: intern USD
   function syncCapital() {
     const raw = Math.max(1000, parseRaw(displayInput.value));
     displayInput.value  = formatNum(raw);
-    hiddenCapital.value = (!_isDax && _currency === 'EUR') ? Math.round(raw * currentEurUsd) : raw;
+    hiddenCapital.value = (!_isDax && !_isEtf && _currency === 'EUR') ? Math.round(raw * currentEurUsd) : raw;
   }
 
   // Wenn keine GET-Parameter vorhanden: gespeicherte Werte aus localStorage laden
   if (!params.has('capital') && !params.has('start_date')) {
-    const savedCapitalUsd = localStorage.getItem('sim_capital');
-    const savedStartDate  = localStorage.getItem('sim_start_date');
-    if (savedCapitalUsd) {
-      const usdVal     = Math.max(1000, parseInt(savedCapitalUsd, 10) || 50000);
-      const displayVal = (!_isDax && _currency === 'EUR') ? Math.round(usdVal / currentEurUsd) : usdVal;
+    // ETF: immer EUR 50.000 als Standard — localStorage-Kapital ignorieren
+    const savedCapitalRaw = _isEtf ? null : localStorage.getItem('sim_capital');
+    // Universumsabhängiger Key — verhindert Überschreiben durch andere Universen
+    const _startKey      = 'sim_start_date_' + (<?= json_encode($universe) ?>);
+    const savedStartDate = localStorage.getItem(_startKey) || localStorage.getItem('sim_start_date');
+    if (savedCapitalRaw) {
+      let capVal = Math.max(10000, parseInt(savedCapitalRaw, 10) || 50000);
+      if (_isDax) capVal = Math.round(capVal / 10000) * 10000;
+      const displayVal = (!_isDax && _currency === 'EUR') ? Math.round(capVal / currentEurUsd) : capVal;
       displayInput.value  = formatNum(displayVal);
-      hiddenCapital.value = usdVal;
+      hiddenCapital.value = capVal;
     }
     if (savedStartDate && startDateInput) startDateInput.value = savedStartDate;
     // Automatisch neu laden wenn gespeicherte Werte vom Default abweichen
     const defaultCapital = parseInt(hiddenCapital.defaultValue, 10);
-    if ((savedCapitalUsd && parseInt(savedCapitalUsd, 10) !== defaultCapital) ||
+    const capToCheck = savedCapitalRaw ? (Math.round(Math.max(10000, parseInt(savedCapitalRaw,10)||50000) / 10000) * 10000) : null;
+    if ((capToCheck && capToCheck !== defaultCapital) ||
         (savedStartDate && startDateInput && savedStartDate !== startDateInput.defaultValue)) {
-      if (savedCapitalUsd) hiddenCapital.value = parseInt(savedCapitalUsd, 10);
+      if (capToCheck) hiddenCapital.value = capToCheck;
       form.submit();
       return;
     }
@@ -601,8 +701,11 @@ if (!_isDax && _currency === 'EUR') {
 
   function saveAndSubmit() {
     syncCapital();
-    localStorage.setItem('sim_capital',    hiddenCapital.value);
-    localStorage.setItem('sim_start_date', startDateInput.value);
+    localStorage.setItem('sim_capital', hiddenCapital.value);
+    // Universumsabhängiger Key, damit S&P 500 / DAX / ETF sich nicht gegenseitig überschreiben
+    const _startKey = 'sim_start_date_' + (<?= json_encode($universe) ?>);
+    localStorage.setItem(_startKey,          startDateInput.value);
+    localStorage.setItem('sim_start_date',   startDateInput.value); // Legacy-Key für Backtracking
     form.submit();
   }
 
@@ -617,9 +720,10 @@ if (!_isDax && _currency === 'EUR') {
       const newLen = displayInput.value.length;
       displayInput.setSelectionRange(sel + (newLen - oldLen), sel + (newLen - oldLen));
     }
-    const usdVal = (!_isDax && _currency === 'EUR') ? Math.round(raw * currentEurUsd) : raw;
-    hiddenCapital.value  = usdVal || '';
-    sliderCapital.value  = Math.min(Math.max(usdVal, 10000), 250000);
+    // ETF + DAX: Kapital in EUR, keine Konvertierung; S&P 500 EUR-Modus: in USD umrechnen
+    const internalVal = (!_isDax && !_isEtf && _currency === 'EUR') ? Math.round(raw * currentEurUsd) : raw;
+    hiddenCapital.value  = internalVal || '';
+    sliderCapital.value  = Math.min(Math.max(raw, 10000), 250000);
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(saveAndSubmit, 800);
   });
@@ -628,10 +732,11 @@ if (!_isDax && _currency === 'EUR') {
 
   // ── Kapital: Slider → Text-Input ─────────────────────────────────────────
   sliderCapital.addEventListener('input', () => {
-    const usdVal     = parseInt(sliderCapital.value, 10);
-    const displayVal = (!_isDax && _currency === 'EUR') ? Math.round(usdVal / currentEurUsd) : usdVal;
-    displayInput.value  = formatNum(displayVal);
-    hiddenCapital.value = usdVal;
+    // Slider-Wert ist immer in der Anzeigewährung (EUR für ETF/DAX, USD für S&P 500)
+    const sliderVal  = parseInt(sliderCapital.value, 10);
+    const displayVal = (!_isDax && !_isEtf && _currency === 'EUR') ? Math.round(sliderVal / currentEurUsd) : sliderVal;
+    displayInput.value  = formatNum(sliderVal);   // Slider ist immer in Anzeigewährung
+    hiddenCapital.value = (!_isDax && !_isEtf && _currency === 'EUR') ? Math.round(sliderVal * currentEurUsd) : sliderVal;
   });
   sliderCapital.addEventListener('change', saveAndSubmit);
 
