@@ -679,7 +679,7 @@ if (!_isDax && !_isEtf && _currency === 'EUR') {
     const savedCapitalRaw = _isEtf ? null : localStorage.getItem('sim_capital');
     // Universumsabhängiger Key — verhindert Überschreiben durch andere Universen
     const _startKey      = 'sim_start_date_' + (<?= json_encode($universe) ?>);
-    const savedStartDate = localStorage.getItem(_startKey) || localStorage.getItem('sim_start_date');
+    const savedStartDate = localStorage.getItem(_startKey); // nur universumsabhängiger Key
     if (savedCapitalRaw) {
       let capVal = Math.max(10000, parseInt(savedCapitalRaw, 10) || 50000);
       if (_isDax) capVal = Math.round(capVal / 10000) * 10000;
@@ -696,6 +696,11 @@ if (!_isDax && !_isEtf && _currency === 'EUR') {
       if (capToCheck) hiddenCapital.value = capToCheck;
       form.submit();
       return;
+    }
+    // Effektives Startdatum sofort persistieren (auch ohne Berechnen-Klick),
+    // damit Dashboard und andere Seiten den korrekten Key lesen können.
+    if (startDateInput && startDateInput.value) {
+      localStorage.setItem(_startKey, startDateInput.value);
     }
   }
 
