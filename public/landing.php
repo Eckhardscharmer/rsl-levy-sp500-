@@ -1211,12 +1211,12 @@ document.querySelectorAll('.lkpi-curr-ref').forEach(el => el.textContent = currL
 
 // ── Startdatum aus localStorage mit URL-Param synchronisieren ───────
 (function () {
-  const _defaultStart = _isDax || _isEtf ? '2010-01-01' : '2024-01-01';
-  const simStart = localStorage.getItem('sim_start_date') || _defaultStart;
+  const _univ = new URLSearchParams(window.location.search).get('universe') || 'sp500';
+  const _startKey = 'sim_start_date_' + _univ;
+  const _defaultStart = (_isDax || _isEtf) ? '2010-01-01' : '2024-01-01';
+  const simStart = localStorage.getItem(_startKey) || _defaultStart;
   const urlStart = new URLSearchParams(window.location.search).get('start_date');
-  if (!localStorage.getItem('sim_start_date')) localStorage.setItem('sim_start_date', _defaultStart);
   if (simStart !== urlStart) {
-    const _univ = new URLSearchParams(window.location.search).get('universe') || localStorage.getItem('universe') || 'sp500';
     window.location.replace('landing.php?start_date=' + encodeURIComponent(simStart) + '&universe=' + encodeURIComponent(_univ));
     return;
   }
