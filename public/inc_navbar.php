@@ -39,7 +39,7 @@ function navUrl(string $page, string $universe, array $extra = []): string {
 <nav class="navbar navbar-expand-lg navbar-dark">
   <div class="container-fluid px-4">
     <a class="navbar-brand fw-bold" href="<?= navUrl('index.php', $universe) ?>">
-      <i class="bi bi-graph-up-arrow text-success me-2"></i>RSL nach Levy
+      <i class="bi bi-graph-up-arrow text-success me-2"></i>Relative Stärke
     </a>
 
     <!-- Schalter: direkt neben Brand, immer sichtbar, schiebt Navlinks nach rechts -->

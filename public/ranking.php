@@ -36,7 +36,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RSL Ranking — S&P 500</title>
+<title>RS Ranking — S&P 500</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
 <style>
@@ -75,7 +75,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
 <div class="container-fluid px-4 py-4">
   <div class="d-flex justify-content-between align-items-center mb-3">
     <div>
-      <h4 class="mb-0">RSL Ranking</h4>
+      <h4 class="mb-0">RS Ranking</h4>
       <small class="text-muted">Datum: <?= $date ? date('d.m.Y', strtotime($date)) : '—' ?></small>
     </div>
     <form method="get" class="d-flex gap-2 filter-bar">
@@ -97,7 +97,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
     <div class="card-header d-flex justify-content-between align-items-center">
       <span><i class="bi bi-list-ol me-2"></i>8 Anlageklassen &nbsp;·&nbsp; Monatliches Rebalancing</span>
       <span class="text-muted small">
-        <span class="portfolio-badge me-2" style="background:#d1fae5;color:#065f46;">● Top 3</span>= Kaufsignal (RSL-Rang + SMA200-Filter) &nbsp;·&nbsp;
+        <span class="portfolio-badge me-2" style="background:#d1fae5;color:#065f46;">● Top 3</span>= Kaufsignal (RS-Rang + SMA200-Filter) &nbsp;·&nbsp;
         RSL = Kurs / SMA 27 Wochen
       </span>
     </div>

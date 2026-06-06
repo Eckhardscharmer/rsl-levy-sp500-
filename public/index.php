@@ -196,7 +196,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RSL nach Levy — <?= $isEtf ? 'ETF Multi-Asset' : ($isDax ? 'DAX' : 'S&P 500') ?> Dashboard</title>
+<title>Relative Stärke — <?= $isEtf ? 'ETF Multi-Asset' : ($isDax ? 'DAX' : 'S&P 500') ?> Dashboard</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
 <style>
@@ -312,7 +312,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
               <?php endif; ?>
               <th class="text-end">Gewicht</th>
               <th class="text-end" id="th-betrag">Betrag in <?= ($isDax || $isEtf) ? 'EUR' : 'USD' /* JS überschreibt bei EUR-Modus */ ?></th>
-              <th class="text-end pe-3">RSL Score</th>
+              <th class="text-end pe-3">RS Score</th>
             </tr>
           </thead>
           <tbody>
@@ -378,7 +378,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
 </div>
 
 <footer class="container-fluid px-4 text-center">
-  RSL nach Levy — <?= $isEtf ? 'ETF Multi-Asset' : ($isDax ? 'DAX' : 'S&P 500') ?> Momentum-System &nbsp;|&nbsp;
+  Relative Stärke — <?= $isEtf ? 'ETF Multi-Asset' : ($isDax ? 'DAX' : 'S&P 500') ?> Momentum-System &nbsp;|&nbsp;
   Powered by Apache + MariaDB + PHP 8.2 &nbsp;|&nbsp;
   Daten: Yahoo Finance &nbsp;|&nbsp;
   <small>Kein Anlageberater — nur zu Informationszwecken</small>

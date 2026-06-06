@@ -212,7 +212,7 @@ if ($hasData) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Backtest — RSL nach Levy</title>
+<title>Backtest — Relative Stärke</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
@@ -246,7 +246,7 @@ if ($hasData) {
 <?php $activePage = 'backtest'; include __DIR__ . '/inc_navbar.php'; ?>
 
 <div class="container-fluid px-4 py-4">
-  <h4 class="mb-4">Backtest — <?= $isEtf ? 'ETF-Momentum Top-3 (monatlich)' : 'RSL Top-5 (wöchentlich)' ?></h4>
+  <h4 class="mb-4">Backtest — <?= $isEtf ? 'ETF-Momentum Top-3 (monatlich)' : 'RS Top-5 (wöchentlich)' ?></h4>
 
 <?php if (!$hasData): ?>
   <div class="alert" style="background:#1e3a5f;border:1px solid #1d4ed8;border-radius:12px">
@@ -662,7 +662,7 @@ function buildChart(startDate) {
       labels,
       datasets: [
         {
-          label: _isEtf ? 'ETF Top-3 Portfolio' : 'RSL Top-5 Portfolio',
+          label: _isEtf ? 'ETF Top-3 Portfolio' : 'RS Top-5 Portfolio',
           data: portfolio,
           borderColor: _isEtf ? '#6ee7b7' : '#4ade80',
           backgroundColor: _isEtf ? 'rgba(110,231,183,.08)' : 'rgba(74,222,128,.08)',

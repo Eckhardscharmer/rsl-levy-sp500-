@@ -213,7 +213,7 @@ if ($hasData) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RSL nach Levy — <?= $isEtf ? 'ETF Multi-Asset' : ($isDax ? 'DAX' : 'S&P 500') ?> Momentum-Strategie</title>
+<title>Relative Stärke — <?= $isEtf ? 'ETF Multi-Asset' : ($isDax ? 'DAX' : 'S&P 500') ?> Momentum-Strategie</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
 <style>
@@ -467,14 +467,14 @@ if ($hasData) {
           <i class="bi bi-<?= $isEtf ? 'globe2' : 'graph-up-arrow' ?>"></i>
           <?= $isEtf ? 'Multi-Asset Momentum-Strategie' : 'Quantitative Momentum-Strategie' ?>
         </div>
-        <h1>RSL nach Levy<br><?= $isEtf ? 'ETF Multi-Asset' : ($isDax ? 'DAX' : 'S&amp;P 500') ?></h1>
+        <h1>Relative Stärke<br><?= $isEtf ? 'ETF Multi-Asset' : ($isDax ? 'DAX' : 'S&amp;P 500') ?></h1>
         <p class="hero-sub">
           <?php if ($isEtf): ?>
           Systematische Allokation in die <strong style="color:#fff;">stärksten Anlageklassen</strong> weltweit —
           8 Asset-Klassen, monatliches Rebalancing, RSL-Ranking kombiniert mit
           <strong style="color:#fff;">SMA200-Trendfilter</strong>. Stets in den Top 3 investiert, Rest in Cash.
           <?php else: ?>
-          Systematisches Aktien-Screening auf Basis der <strong style="color:#fff;">Relativen Stärke nach Levy</strong> —
+          Systematisches Aktien-Screening auf Basis der <strong style="color:#fff;">Relativen Stärke</strong> —
           wöchentliches Rebalancing, strikte Sektor-Diversifikation, vollständig regelbasiert.
           <?php if ($isDax): ?>
           Universum: <strong style="color:#fff;">DAX 40</strong> — 40 führende deutsche Unternehmen.
@@ -571,17 +571,17 @@ if ($hasData) {
       <div class="col-md-6 col-xl-4 fade-up">
         <div class="step-card green">
           <div class="step-num green">2</div>
-          <div class="step-title">RSL-Berechnung</div>
+          <div class="step-title">RS-Berechnung</div>
           <?php if ($isEtf): ?>
           <div class="step-body">
-            Für jede Anlageklasse wird monatlich der <strong>Relative Stärke Index nach Levy</strong>
+            Für jede Anlageklasse wird monatlich der <strong>Relativen Stärke</strong>
             berechnet: aktueller Kurs dividiert durch den Durchschnitt der letzten
             <strong>27 Wochen</strong>. Ein RSL &gt; 1 signalisiert Momentum.
           </div>
           <div class="step-formula">RSL = Kurs<sub>aktuell</sub> / MA<sub>27W</sub></div>
           <?php else: ?>
           <div class="step-body">
-            Für jede Aktie wird wöchentlich der <strong>Relative Stärke Index nach Levy</strong>
+            Für jede Aktie wird wöchentlich der <strong>Relativen Stärke</strong>
             berechnet: der aktuelle Kurs dividiert durch den gleitenden Durchschnitt
             der letzten 26 Wochen (130 Handelstage).
             Ein RSL &gt; 1 signalisiert überdurchschnittliche relative Stärke.
@@ -599,7 +599,7 @@ if ($hasData) {
           <div class="step-body">
             Nur Anlageklassen, bei denen der aktuelle Kurs <strong>über dem 200-Tage-Durchschnitt</strong>
             notiert, sind investierbar. Liegt der Kurs darunter, wird die Anlageklasse
-            ignoriert — unabhängig von ihrem RSL-Rang. Dies schützt vor Investments
+            ignoriert — unabhängig von ihrem RS-Rang. Dies schützt vor Investments
             in anhaltende Abwärtstrends.
           </div>
           <div class="step-formula">Kurs &gt; SMA(200) → investierbar</div>
@@ -740,7 +740,7 @@ if ($hasData) {
           <div class="assumption-icon"><i class="bi bi-slash-circle"></i></div>
           <div>
             <div class="assumption-title">M&amp;A-Filter</div>
-            <div class="assumption-body">Aktien in laufenden Übernahme- oder Fusionssituationen werden von der Selektion ausgeschlossen. M&amp;A-Ankündigungen treiben den Kurs künstlich nach oben und verfälschen damit den RSL-Wert — ein Kaufsignal wäre in diesen Fällen irreführend.</div>
+            <div class="assumption-body">Aktien in laufenden Übernahme- oder Fusionssituationen werden von der Selektion ausgeschlossen. M&amp;A-Ankündigungen treiben den Kurs künstlich nach oben und verfälschen damit den RS-Wert — ein Kaufsignal wäre in diesen Fällen irreführend.</div>
           </div>
         </div>
         <?php endif; ?>
@@ -791,7 +791,7 @@ if ($hasData) {
     <div class="text-center mb-4 fade-up">
       <div class="section-eyebrow" style="color:<?= $isEtf ? '#6ee7b7' : '#93c5fd' ?>;">Aktuell</div>
       <h2 class="section-title" style="color:#fff;font-size:1.6rem;">
-        <?= $isEtf ? 'Aktuelles ETF Top-3 Portfolio' : 'Aktuelles RSL Top-5 Portfolio' ?>
+        <?= $isEtf ? 'Aktuelles ETF Top-3 Portfolio' : 'Aktuelles RS Top-5 Portfolio' ?>
       </h2>
       <?php if ($isEtf): ?>
       <p style="color:rgba(255,255,255,.55);font-size:.85rem;margin-top:.5rem;">
@@ -911,7 +911,7 @@ if ($hasData) {
           <h5 style="color:#fff; font-weight:700; margin-bottom:.5rem;">Backtest-Ergebnis: DAX (2010–2026)</h5>
           <p style="color:rgba(255,255,255,.65); font-size:.9rem; margin:0; line-height:1.7;">
             Über den gesamten Zeitraum von Januar 2010 bis heute — mit wöchentlichem Rebalancing
-            und Sektordiversifikation — wird die RSL-Strategie auf den <strong style="color:#fff;">DAX 40</strong>
+            und Sektordiversifikation — wird die RS-Strategie auf den <strong style="color:#fff;">DAX 40</strong>
             angewendet. Benchmark ist der DAX-Index (<strong style="color:#fff;">^GDAXI</strong>).
             Alle Kurse und Ergebnisse in <strong style="color:#4ade80;">EUR</strong>.
             Genaue Kennzahlen entnehmen Sie dem <a href="<?= navUrl('backtest.php', $universe) ?>" style="color:#93c5fd;">Backtest</a>.
@@ -950,7 +950,7 @@ if ($hasData) {
           <h5 style="color:#fff; font-weight:700; margin-bottom:.5rem;">Backtest-Ergebnis: 16 Jahre (2010–2026)</h5>
           <p style="color:rgba(255,255,255,.65); font-size:.9rem; margin:0; line-height:1.7;">
             Über den gesamten Zeitraum von Januar 2010 bis heute — mit wöchentlichem Rebalancing
-            und Sektordiversifikation — lieferte die RSL-Strategie eine annualisierte Rendite
+            und Sektordiversifikation — lieferte die RS-Strategie eine annualisierte Rendite
             von rund <strong style="color:#4ade80;">23,6% p.a.</strong> bei 473 Trades. Das entspricht einer Gesamtrendite von knapp <strong style="color:#4ade80;">3.000%</strong>
             gegenüber dem S&amp;P 500 als Vergleichsmaßstab. Der maximale Drawdown betrug
             <strong style="color:#fbbf24;">–45,5%</strong> (u.a. COVID-Crash 2020).
@@ -1063,7 +1063,7 @@ if ($hasData) {
       <div class="section-eyebrow">Vergleich</div>
       <h2 class="section-title">ETF-Strategie vs. S&amp;P 500 vs. DAX</h2>
       <p class="section-sub mx-auto mt-3">
-        Die drei Universen teilen dieselbe RSL-Grundidee — unterscheiden sich aber in
+        Die drei Universen teilen dieselbe RS-Grundidee — unterscheiden sich aber in
         Regelwerk, Rebalancing-Frequenz und Risikomanagement wesentlich.
       </p>
     </div>
@@ -1087,7 +1087,7 @@ if ($hasData) {
                'sp'=>'~580 US-Aktien (historische S&amp;P 500-Mitglieder)',
                'dax'=>'40 deutsche Aktien (historische DAX-Mitglieder)',
                'highlight'=>false],
-              ['label'=>'RSL-Formel',
+              ['label'=>'RS-Formel',
                'etf'=>'Kurs ÷ SMA <strong>27 Wochen</strong>',
                'sp'=>'Kurs ÷ SMA <strong>26 Wochen</strong>',
                'dax'=>'Kurs ÷ SMA <strong>26 Wochen</strong>',
@@ -1171,7 +1171,7 @@ if ($hasData) {
      FOOTER
 ════════════════════════════════════════════════════════════════ -->
 <div class="landing-footer">
-  RSL nach Levy — <?= $isEtf ? 'ETF Multi-Asset' : ($isDax ? 'DAX' : 'S&amp;P 500') ?> Momentum-System &nbsp;|&nbsp;
+  Relative Stärke — <?= $isEtf ? 'ETF Multi-Asset' : ($isDax ? 'DAX' : 'S&amp;P 500') ?> Momentum-System &nbsp;|&nbsp;
   Apache · MariaDB · PHP 8.2 &nbsp;|&nbsp;
   Daten: Yahoo Finance &nbsp;|&nbsp;
   Kein Anlageberater — nur zu Informationszwecken
