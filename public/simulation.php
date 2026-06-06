@@ -18,8 +18,10 @@ foreach ($db->query('SELECT ticker, headline FROM m_and_a_flags WHERE is_active 
 
 // ── Parameter ──────────────────────────────────────────────────────────────
 $startCapital = max(1000, (float)($_GET['capital'] ?? 50000));
-// ETF + DAX: Kapital auf 10.000er runden (Nutzer gibt EUR ein, Slider-Schritte = 10.000)
-if ($isEtf || $isDax) $startCapital = max(10000, round($startCapital / 10000) * 10000);
+// ETF: immer exakt 50.000 EUR (URL-Parameter wird ignoriert)
+if ($isEtf) $startCapital = 50000.0;
+// DAX: Kapital auf 10.000er runden
+elseif ($isDax) $startCapital = max(10000, round($startCapital / 10000) * 10000);
 $minDate      = $isEtf ? '2000-01-31' : '2010-01-04';
 $startDate    = $_GET['start_date'] ?? ($isEtf ? '2010-01-31' : '2024-01-01');
 $maxDate      = $db->query("SELECT MAX(ranking_date) FROM rsl_rankings WHERE universe='$universe'")->fetchColumn() ?: date('Y-m-d');
@@ -376,9 +378,9 @@ $endEurUsd   = (float)($stmtEur->fetchColumn() ?: $currentEurUsd);
                      value="<?= number_format($startCapital, 0, '.', '') ?>">
 
               <!-- Startkapital -->
-              <div class="mb-3">
+              <div class="mb-3"<?= $isEtf ? ' style="opacity:.5;pointer-events:none;" title="ETF-Simulation startet immer mit 50.000 EUR"' : '' ?>>
                 <label class="form-label" style="font-size:.78rem;font-weight:700;color:#1e40af;letter-spacing:.03em;text-transform:uppercase;">
-                  <i class="bi bi-cash-coin me-1"></i>Startkapital
+                  <i class="bi bi-cash-coin me-1"></i>Startkapital<?= $isEtf ? ' <span style="font-size:.75rem;font-weight:400;color:#6b7280;">(fix: 50.000 EUR)</span>' : '' ?>
                 </label>
                 <div class="input-group">
                   <span class="input-group-text" id="capital-currency-label"
@@ -386,12 +388,14 @@ $endEurUsd   = (float)($stmtEur->fetchColumn() ?: $currentEurUsd);
                   <input type="text" class="form-control" id="inputCapitalDisplay"
                          value="<?= number_format($startCapital, 0, ',', '.') ?>"
                          style="font-size:1.15rem;font-weight:700;text-align:right;border-color:#bfdbfe;color:#1e3a8a;letter-spacing:.01em;"
-                         autocomplete="off" inputmode="numeric">
+                         autocomplete="off" inputmode="numeric" <?= $isEtf ? 'readonly' : '' ?>>
                 </div>
+                <?php if (!$isEtf): ?>
                 <input type="range" id="sliderCapital" class="sim-slider"
                        min="10000" max="250000" step="10000"
                        value="<?= (int)$startCapital ?>">
                 <div class="slider-limits"><span>10.000</span><span>250.000</span></div>
+                <?php endif; ?>
               </div>
 
               <!-- Start Strategie -->
@@ -709,8 +713,7 @@ if (!_isDax && !_isEtf && _currency === 'EUR') {
     localStorage.setItem('sim_capital', hiddenCapital.value);
     // Universumsabhängiger Key, damit S&P 500 / DAX / ETF sich nicht gegenseitig überschreiben
     const _startKey = 'sim_start_date_' + (<?= json_encode($universe) ?>);
-    localStorage.setItem(_startKey,          startDateInput.value);
-    localStorage.setItem('sim_start_date',   startDateInput.value); // Legacy-Key für Backtracking
+    localStorage.setItem(_startKey, startDateInput.value);
     form.submit();
   }
 

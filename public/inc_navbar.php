@@ -4,7 +4,7 @@
  *
  * Erwartet:
  *   $activePage  (string) — 'landing'|'index'|'simulation'|'ranking'|'backtest'
- *   $universe    (string) — 'sp500'|'dax'
+ *   $universe    (string) — 'sp500'|'dax'|'etf'
  *
  * Optionale Variablen:
  *   $currentEurUsd (float) — aktueller EUR/USD-Kurs

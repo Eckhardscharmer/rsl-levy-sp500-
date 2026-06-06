@@ -1213,7 +1213,7 @@ document.querySelectorAll('.lkpi-curr-ref').forEach(el => el.textContent = currL
 (function () {
   const _univ = new URLSearchParams(window.location.search).get('universe') || 'sp500';
   const _startKey = 'sim_start_date_' + _univ;
-  const _defaultStart = (_isDax || _isEtf) ? '2010-01-01' : '2024-01-01';
+  const _defaultStart = _isEtf ? '2010-01-31' : (_isDax ? '2010-01-04' : '2024-01-01');
   const simStart = localStorage.getItem(_startKey) || _defaultStart;
   const urlStart = new URLSearchParams(window.location.search).get('start_date');
   if (simStart !== urlStart) {
