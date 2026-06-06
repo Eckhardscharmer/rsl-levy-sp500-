@@ -311,7 +311,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
               <th>Sektor</th>
               <?php endif; ?>
               <th class="text-end">Gewicht</th>
-              <th class="text-end" id="th-betrag">Betrag in <?= ($isDax || $isEtf) ? 'EUR' : 'USD' ?></th>
+              <th class="text-end" id="th-betrag">Betrag in <?= ($isDax || $isEtf) ? 'EUR' : 'USD' /* JS überschreibt bei EUR-Modus */ ?></th>
               <th class="text-end pe-3">RSL Score</th>
             </tr>
           </thead>
@@ -425,7 +425,7 @@ const _defStart  = _isEtf ? '2010-01-31' : '2024-01-01';
   // S&P 500 EUR-Modus: simCapital in USD → in EUR umrechnen
   const total = (_isDax || _isEtf) ? totalUsd
               : (_currency === 'EUR' ? totalUsd / currentEurUsd : totalUsd);
-  const dispCurr   = (_isDax || _isEtf) ? 'EUR' : 'USD';
+  const dispCurr   = (_isDax || _isEtf) ? 'EUR' : _currency;
 
   // ── Labels & Werte ──────────────────────────────────────────────────────
   const thBetrag = document.getElementById('th-betrag');
