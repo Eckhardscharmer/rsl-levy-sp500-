@@ -576,7 +576,7 @@ if ($hasData) {
           <div class="step-body">
             Für jede Anlageklasse wird monatlich der <strong>Relativen Stärke</strong>
             berechnet: aktueller Kurs dividiert durch den Durchschnitt der letzten
-            <strong>27 Wochen</strong>. Ein RS Ein RSL &gt;gt; 1 signalisiert Momentum.
+            <strong>27 Wochen</strong>. Ein RS &gt; 1 signalisiert Momentum.
           </div>
           <div class="step-formula">RS = Kurs<sub>aktuell</sub> / MA<sub>27W</sub></div>
           <?php else: ?>
@@ -584,7 +584,7 @@ if ($hasData) {
             Für jede Aktie wird wöchentlich der <strong>Relativen Stärke</strong>
             berechnet: der aktuelle Kurs dividiert durch den gleitenden Durchschnitt
             der letzten 26 Wochen (130 Handelstage).
-            Ein RS Ein RSL &gt;gt; 1 signalisiert überdurchschnittliche relative Stärke.
+            Ein RS &gt; 1 signalisiert überdurchschnittliche relative Stärke.
           </div>
           <div class="step-formula">RS = Kurs<sub>aktuell</sub> / SMA<sub>26W</sub></div>
           <?php endif; ?>
