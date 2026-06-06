@@ -92,7 +92,9 @@ def download_ticker(ticker: str, start: str = None, end: str = None):
     dl_end   = end   or DATA_END
 
     # Yahoo Finance Ticker-Normalisierung (BRK.B → BRK-B)
-    yahoo_ticker = ticker.replace('.', '-')
+    # BRK.B → BRK-B (US-Sonderfall), aber .DE/.PA etc. bleiben unverändert
+    import re as _re
+    yahoo_ticker = _re.sub(r'\.(?=[A-Z]$)', '-', ticker) if not _re.search(r'\.[A-Z]{2}$', ticker) else ticker
 
     t = yf.Ticker(yahoo_ticker)
     df = t.history(start=dl_start, end=dl_end, auto_adjust=False)
