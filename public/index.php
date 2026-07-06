@@ -329,7 +329,13 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
                   <?= htmlspecialchars($row['company']) ?>
                 <?php endif; ?>
               </td>
-              <td style="color:#6c757d;"><?= htmlspecialchars($row['company']) ?></td>
+              <td style="color:#6c757d;">
+                <?php if ($isEtf): ?>
+                  <?= htmlspecialchars($row['company']) ?>
+                <?php else: ?>
+                  <span class="sector-badge"><?= htmlspecialchars($row['sector']) ?></span>
+                <?php endif; ?>
+              </td>
               <td class="text-end"><?= number_format($row['weight'], 1, ',', '.') ?>%</td>
               <td class="text-end js-mv" data-weight="<?= round($row['weight'], 6) ?>">—</td>
               <td class="text-end pe-3">
