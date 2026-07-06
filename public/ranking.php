@@ -73,12 +73,12 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
 <?php $activePage = 'ranking'; include __DIR__ . '/inc_navbar.php'; ?>
 
 <div class="container-fluid px-4 py-4">
-  <div class="d-flex justify-content-between align-items-center mb-3">
+  <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
     <div>
       <h4 class="mb-0">RS Ranking</h4>
       <small class="text-muted">Datum: <?= $date ? date('d.m.Y', strtotime($date)) : '—' ?></small>
     </div>
-    <form method="get" class="d-flex gap-2 filter-bar">
+    <form method="get" class="d-flex gap-2 flex-wrap filter-bar">
       <input type="date" name="date" class="form-control form-control-sm"
              value="<?= htmlspecialchars($date ?? '') ?>" max="<?= $latestDate ?>">
       <select name="limit" class="form-select form-select-sm" style="width:auto">
@@ -98,7 +98,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
       <span><i class="bi bi-list-ol me-2"></i>8 Anlageklassen &nbsp;·&nbsp; Monatliches Rebalancing</span>
       <span class="text-muted small">
         <span class="portfolio-badge me-2" style="background:#d1fae5;color:#065f46;">● Top 3</span>= Kaufsignal (RS-Rang + SMA200-Filter) &nbsp;·&nbsp;
-        RSL = Kurs / SMA 27 Wochen
+        RS = Kurs / SMA 27 Wochen
       </span>
     </div>
     <div class="card-body p-0">
@@ -114,7 +114,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
             <th class="text-end">SMA 27W</th>
             <th class="text-end">SMA 200</th>
             <th class="text-center">Trend</th>
-            <th class="text-end" style="width:160px">RSL</th>
+            <th class="text-end" style="width:160px">RS</th>
           </tr>
         </thead>
         <tbody>
@@ -196,7 +196,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
       <span><i class="bi bi-list-ol me-2"></i><?= count($ranking) ?> Aktien</span>
       <span class="text-muted small">
         <span class="portfolio-badge me-2">● Portfolio</span>= aktuelle Simulation &nbsp;·&nbsp;
-        RSL = Kurs / SMA 26 Wochen
+        RS = Kurs / SMA 26 Wochen
       </span>
     </div>
     <div class="card-body p-0">
@@ -210,7 +210,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
             <th>Sektor</th>
             <th class="text-end" id="th-kurs">Kurs (<?= $isDax ? 'EUR' : 'USD' ?>)</th>
             <th class="text-end" id="th-sma">SMA 26W (<?= $isDax ? 'EUR' : 'USD' ?>)</th>
-            <th class="text-end" style="width:180px">RSL</th>
+            <th class="text-end" style="width:180px">RS</th>
           </tr>
         </thead>
         <tbody>
