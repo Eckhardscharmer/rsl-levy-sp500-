@@ -6,10 +6,10 @@ Aufruf: python3 scripts/10_download_etf_prices.py
 import sys, os, subprocess, json, shutil
 from datetime import datetime
 
-MYSQL = '/Applications/XAMPP/xamppfiles/bin/mysql'
+MYSQL = shutil.which('mysql') or '/Applications/XAMPP/xamppfiles/bin/mysql'
 DB    = 'rsl_system'
 USER  = 'root'
-PASS  = ''
+PASS  = 'rsl2024' if MYSQL != '/Applications/XAMPP/xamppfiles/bin/mysql' else ''
 START = '1998-01-01'
 END   = datetime.today().strftime('%Y-%m-%d')
 

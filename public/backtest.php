@@ -4,9 +4,11 @@ $db = getDB();
 
 // ── Universe ───────────────────────────────────────────────────────────────
 $universe = $_GET['universe'] ?? 'sp500';
-if (!in_array($universe, ['sp500', 'dax', 'etf'])) $universe = 'sp500';
-$isDax    = ($universe === 'dax');
-$isEtf    = ($universe === 'etf');
+if (!in_array($universe, ['sp500', 'dax', 'hdax', 'etf'])) $universe = 'sp500';
+$isDax        = ($universe === 'dax');
+$isHdax       = ($universe === 'hdax');
+$isEtf        = ($universe === 'etf');
+$isEurUniverse = ($isDax || $isHdax || $isEtf);
 
 // ── Parameter (via GET, gesetzt vom JS-Redirect) ───────────────────────────
 $minDate      = $isEtf ? '2000-01-31' : '2010-01-04';
@@ -99,7 +101,7 @@ if ($hasData) {
     } else {
         // ── S&P 500 / DAX Simulation (wöchentlich, Top 5, Sektordiversifikation) ─
         $maFlagged = [];
-        foreach ($db->query('SELECT ticker FROM m_and_a_flags WHERE is_active = 1')
+        foreach ($db->query('SELECT ticker FROM m_and_a_flags WHERE is_active = 1 AND (expires_date IS NULL OR expires_date > CURDATE())')
                      ->fetchAll(PDO::FETCH_COLUMN) as $t) {
             $maFlagged[$t] = true;
         }
@@ -107,10 +109,9 @@ if ($hasData) {
         foreach ($simSundays as $i => $sunday) {
             $weekRankings = $byDate[$sunday];
             $rankByTicker = array_column($weekRankings, null, 'ticker');
-            $isLast       = ($i === count($simSundays) - 1);
             $saleProceeds = [];
 
-            $holdRank = $isDax ? ($sunday >= '2021-09-20' ? 10 : 7) : 125;
+            $holdRank = $isHdax ? 25 : ($isDax ? ($sunday >= '2021-09-20' ? 10 : 7) : 125);
             foreach (array_keys($holdings) as $ticker) {
                 $rank = isset($rankByTicker[$ticker])
                     ? (int)$rankByTicker[$ticker]['rank_overall'] : PHP_INT_MAX;
@@ -131,7 +132,7 @@ if ($hasData) {
             foreach ($weekRankings as $stock) {
                 if ($vacancies <= 0) break;
                 if (isset($holdings[$stock['ticker']])) continue;
-                if ($isLast && isset($maFlagged[$stock['ticker']])) continue;
+                if (isset($maFlagged[$stock['ticker']])) continue;
                 $sector = $stock['sector'] ?? 'Unknown';
                 if (in_array($sector, $heldSectors)) continue;
                 $price = (float)$stock['current_price'];
@@ -152,7 +153,7 @@ if ($hasData) {
             }
             $weeklyPortfolio[$sunday] = $cash + $invested;
         }
-        $benchTicker = $isDax ? '^GDAXI' : 'SPY';
+        $benchTicker = $isHdax ? '^HDAX' : ($isDax ? '^GDAXI' : 'SPY');
     }
 
     // ── Benchmark auf startCapital normiert ───────────────────────────────────
@@ -191,7 +192,8 @@ if ($hasData) {
     $allSellDatesJson = json_encode($allSellDatesList);
 
     // ── EUR/USD historische Kurse (S&P 500 und ETF) ──────────────────────────
-    if (!$isDax) {
+    // ETF: Portfolio EUR-nativ, aber ACWI-Benchmark ist USD → FX-Kurse nötig
+    if (!$isDax && !$isHdax) {
         $eurRatesRaw   = $db->query("SELECT price_date, adj_close FROM prices WHERE ticker='EURUSD=X' ORDER BY price_date")->fetchAll(PDO::FETCH_KEY_PAIR);
         $currentEurUsd = $eurRatesRaw ? (float)end($eurRatesRaw) : 1.10;
         $eurDates      = array_keys($eurRatesRaw);
@@ -203,7 +205,17 @@ if ($hasData) {
             $rates[] = ($nEur > 0 && $eurDates[$eurIdx] <= $sunday)
                 ? (float)$eurRatesRaw[$eurDates[$eurIdx]] : $currentEurUsd;
         }
-        $chartEurRates = $rates;   // als PHP-Array, json_encode() erfolgt in JS-Ausgabe
+        $chartEurRates = $rates;
+
+        // Start-EUR/USD: Kurs auf oder vor dem ersten Ranking-Datum (nicht Input-Datum!)
+        // → identisch mit compare.php, das ebenfalls $firstDate = $simSundays[0] nutzt
+        $stmtEurStart = $db->prepare("SELECT adj_close FROM prices WHERE ticker='EURUSD=X' AND price_date <= ? ORDER BY price_date DESC LIMIT 1");
+        $stmtEurStart->execute([$simSundays[0]]);
+        $startEurUsd = (float)($stmtEurStart->fetchColumn() ?: $currentEurUsd);
+
+        // End-EUR/USD: Kurs am letzten Ranking-Datum (nicht currentEurUsd, das kann neuer sein)
+        $stmtEurStart->execute([end($simSundays)]);
+        $endEurUsd = (float)($stmtEurStart->fetchColumn() ?: $currentEurUsd);
     }
 }
 ?>
@@ -212,34 +224,46 @@ if ($hasData) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Backtest — Relative Stärke</title>
+<title>Backtest — Relative Stärke nach Levy</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
-  body { background: #f5f7fa; }
+  body { background: #0a0f1e; color: #e2e8f0; font-family: 'Inter', sans-serif; }
   .navbar { background: #0f172a !important; border-bottom: 1px solid #1e2d4a; box-shadow: 0 2px 12px rgba(0,0,0,.3); min-height: 56px; }
   .navbar .container-fluid { min-height: 56px; height: auto; }
   .navbar .navbar-brand { color: #fff !important; font-weight: 700; padding: 0; }
   .navbar .nav-link { color: rgba(255,255,255,.6) !important; padding: .375rem .65rem !important; font-size: .875rem; }
   .navbar .nav-link:hover { color: #fff !important; }
-  .card { background: #ffffff; border: 1px solid #dee2e6; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
-  .card-header { background: #f8f9fa; border-bottom: 1px solid #dee2e6; font-weight: 600; }
-  .metric-card { text-align: center; padding: .85rem 1rem; }
-  .metric-value { font-size: 1.25rem; font-weight: 700; }
-  .metric-label { color: #6c757d; font-size: .72rem; text-transform: uppercase; letter-spacing: .4px; margin-top: .15rem; }
-  .table { --bs-table-bg: transparent; }
-  .table th { color: #6c757d; font-size: .78rem; text-transform: uppercase; border-color: #dee2e6; }
-  .table td { border-color: #dee2e6; font-size: .87rem; vertical-align: middle; }
-  .buy-action { color: #16a34a; }
-  .sell-action { color: #dc2626; }
-  .positive { color: #16a34a; }
-  .negative { color: #dc2626; }
+  .card { background: #111827; border: 1px solid rgba(255,255,255,.08); border-radius: 12px; }
+  .card-header { background: #0f172a; border-bottom: 1px solid rgba(255,255,255,.08); font-weight: 600; color: #f1f5f9; }
+  .card-footer { background: #0f172a; border-top: 1px solid rgba(255,255,255,.08); color: rgba(255,255,255,.4); }
+  .metric-card { text-align: center; padding: .85rem 1rem; background: #1e293b; border-radius: 10px; }
+  .metric-value { font-size: 1.25rem; font-weight: 700; color: #f1f5f9; }
+  .metric-label { color: rgba(255,255,255,.4); font-size: .72rem; text-transform: uppercase; letter-spacing: .4px; margin-top: .15rem; }
+  .table { --bs-table-bg: transparent; --bs-table-color: #e2e8f0; }
+  .table th { color: rgba(255,255,255,.4); font-weight: 700; font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; border-color: rgba(255,255,255,.06); }
+  .table td { border-color: rgba(255,255,255,.06); font-size: .87rem; vertical-align: middle; color: #e2e8f0; }
+  .table tbody tr:hover { background: rgba(255,255,255,.03); }
+  .buy-action { color: #4ade80; font-weight: 600; }
+  .sell-action { color: #f87171; font-weight: 600; }
+  .positive { color: #4ade80; }
+  .negative { color: #f87171; }
   .nav-link.active { color: #fff !important; font-weight: 600; }
   html { overflow-y: scroll; }
+  .bt-chart-body { height: 422px; }
+  @media (max-width: 575px) { .bt-chart-body { height: 280px; } }
   .currency-toggle { background: rgba(255,255,255,.1); border-radius: 20px; padding: 2px; display: flex; align-items: center; }
   .cur-btn { background: transparent; border: none; color: rgba(255,255,255,.45); font-size: .75rem; font-weight: 700; padding: .2rem .65rem; border-radius: 18px; cursor: pointer; transition: all .15s; line-height: 1.6; }
   .cur-btn.active { background: #2563eb; color: #fff; box-shadow: 0 0 0 2px rgba(37,99,235,.4); }
+  .text-muted { color: rgba(255,255,255,.4) !important; }
+  .text-success { color: #4ade80 !important; }
+  .text-danger  { color: #f87171 !important; }
+  .kpi-green  { color: #4ade80; }
+  .kpi-red    { color: #f87171; }
+  .kpi-blue   { color: #60a5fa; }
+  .kpi-white  { color: #f1f5f9; }
+  hr { border-color: rgba(255,255,255,.07); }
 </style>
 </head>
 <body>
@@ -265,7 +289,7 @@ if ($hasData) {
     </div>
     <div class="col-6 col-md-2">
       <div class="card metric-card">
-        <div class="metric-value text-warning" id="kpiDrawdown">—</div>
+        <div class="metric-value kpi-red" id="kpiDrawdown">—</div>
         <div class="metric-label">Max. Drawdown</div>
       </div>
     </div>
@@ -277,19 +301,19 @@ if ($hasData) {
     </div>
     <div class="col-6 col-md-2">
       <div class="card metric-card">
-        <div class="metric-value text-muted" id="kpiBenchmark">—</div>
-        <div class="metric-label"><?= $isEtf ? 'MSCI ACWI (ACWI)' : ($isDax ? 'DAX (^GDAXI)' : 'S&amp;P 500 (SPY)') ?> <span id="kpi-bench-curr" class="text-muted" style="font-size:.65rem;text-transform:none;letter-spacing:0;opacity:.75;"></span><?php if ($isEtf): ?><sup style="color:#f59e0b;font-size:.7rem;">*</sup><?php endif; ?></div>
+        <div class="metric-value kpi-blue" id="kpiBenchmark">—</div>
+        <div class="metric-label"><?= $isEtf ? 'MSCI ACWI (ACWI)' : ($isHdax ? 'HDAX (^HDAX)' : ($isDax ? 'DAX (^GDAXI)' : 'S&amp;P 500 (SPY)')) ?> <span id="kpi-bench-curr" class="text-muted" style="font-size:.65rem;text-transform:none;letter-spacing:0;opacity:.75;"></span><?php if ($isEtf): ?><sup style="color:#f59e0b;font-size:.7rem;">*</sup><?php endif; ?></div>
       </div>
     </div>
     <div class="col-6 col-md-2">
       <div class="card metric-card">
-        <div class="metric-value text-muted" id="tradesValue"><?= $numTrades ?></div>
+        <div class="metric-value kpi-white" id="tradesValue"><?= $numTrades ?></div>
         <div class="metric-label">Trades gesamt</div>
       </div>
     </div>
     <div class="col-6 col-md-2">
       <div class="card metric-card">
-        <div class="metric-value text-muted" id="zeitraumValue">—</div>
+        <div class="metric-value kpi-white" id="zeitraumValue">—</div>
         <div class="metric-label">Zeitraum</div>
       </div>
     </div>
@@ -299,8 +323,8 @@ if ($hasData) {
   <div class="row g-3">
     <div class="col-lg-6">
       <div class="card h-100">
-        <div class="card-header"><i class="bi bi-graph-up me-2"></i>Portfolio-Entwicklung vs. <?= $isEtf ? 'MSCI ACWI (ACWI)' : ($isDax ? 'DAX (^GDAXI)' : 'S&amp;P 500 (SPY)') ?></div>
-        <div class="card-body" style="height:422px;">
+        <div class="card-header"><i class="bi bi-graph-up me-2"></i>Portfolio-Entwicklung vs. <?= $isEtf ? 'MSCI ACWI (ACWI)' : ($isHdax ? 'HDAX (^HDAX)' : ($isDax ? 'DAX (^GDAXI)' : 'S&amp;P 500 (SPY)')) ?></div>
+        <div class="card-body bt-chart-body">
           <canvas id="btChart"></canvas>
         </div>
       </div>
@@ -317,6 +341,11 @@ if ($hasData) {
         <div class="card-body" style="height:180px;">
           <canvas id="guvChart"></canvas>
         </div>
+        <div class="card-footer" style="font-size:.78rem;color:rgba(255,255,255,.4);line-height:1.5;">
+          <i class="bi bi-info-circle me-1"></i>
+          Jeder Balken zeigt die Wertveränderung des Gesamtportfolios im jeweiligen Kalendermonat.
+          Der laufende Monat endet am letzten verfügbaren Datenpunkt und ist daher nur ein Teilmonat.
+        </div>
       </div>
     </div>
   </div>
@@ -325,8 +354,8 @@ if ($hasData) {
 <?php if ($isEtf): ?>
   <!-- Fußnote MSCI World Datenverfügbarkeit — Inhalt wird per JS gesetzt -->
   <div id="bench-footnote" style="display:none; margin-top:1.5rem; padding:.75rem 1rem;
-       background:#fefce8; border:1px solid #fde68a; border-radius:10px;
-       font-size:.8rem; color:#78350f; line-height:1.6;">
+       background:rgba(251,191,36,.1); border:1px solid rgba(251,191,36,.3); border-radius:10px;
+       font-size:.8rem; color:#fbbf24; line-height:1.6;">
   </div>
 <?php endif; ?>
 <?php endif; ?>
@@ -340,20 +369,38 @@ const allPortfolio = <?= $chartPortfolio ?>;
 const allBenchmark = <?= $chartBenchmark ?>;
 const allEurRates  = <?= json_encode(is_array($chartEurRates) ? $chartEurRates : []) ?>;
 const currentEurUsd = <?= round($currentEurUsd, 6) ?>;
+const startEurUsd   = <?= round($startEurUsd ?? $currentEurUsd, 6) ?>; // EUR/USD am Input-Startdatum
+const endEurUsd     = <?= round($endEurUsd ?? $currentEurUsd, 6) ?>;   // EUR/USD am letzten Ranking-Datum
 const endDate      = '<?= $endDate ?>';
 const allBuyDates  = <?= $allBuyDatesJson ?>;
 const allSellDates = <?= $allSellDatesJson ?>;
 const startCapital = <?= (int)$startCapital ?>;
 const _isDax       = <?= $isDax ? 'true' : 'false' ?>;
+const _isHdax      = <?= $isHdax ? 'true' : 'false' ?>;
 const _isEtf       = <?= $isEtf ? 'true' : 'false' ?>;
+const _isEurUni    = <?= $isEurUniverse ? 'true' : 'false' ?>;
 const _defStart    = _isEtf ? '2010-01-31' : '2010-01-04';
 
-// Währungs-Toggle: DAX + ETF immer EUR; S&P 500 per localStorage
-const _currency = (_isDax || _isEtf) ? 'EUR' : (localStorage.getItem('currency') || 'USD');
+// Währungs-Toggle: DAX/HDAX/ETF immer EUR; S&P 500 per localStorage
+let _currency = _isEurUni ? 'EUR' : (localStorage.getItem('currency') || 'EUR');
+
+function applyCurrencyToggle(newCur) {
+  if (_isEurUni) return; // EUR-Universen immer EUR
+  localStorage.setItem('currency', newCur);
+  _currency = newCur;
+  document.getElementById('btn-usd')?.classList.toggle('active', newCur === 'USD');
+  document.getElementById('btn-eur')?.classList.toggle('active', newCur === 'EUR');
+  const lbl = newCur === 'EUR' ? '(EUR)' : '(USD)';
+  ['kpi-return-curr', 'kpi-outperf-curr', 'kpi-bench-curr'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.textContent = lbl;
+  });
+  buildChart(allLabels[0]);
+}
+
 document.getElementById('btn-usd')?.classList.toggle('active', _currency === 'USD');
 document.getElementById('btn-eur')?.classList.toggle('active', _currency === 'EUR');
-document.getElementById('btn-usd')?.addEventListener('click', () => { localStorage.setItem('currency', 'USD'); location.reload(); });
-document.getElementById('btn-eur')?.addEventListener('click', () => { localStorage.setItem('currency', 'EUR'); location.reload(); });
+document.getElementById('btn-usd')?.addEventListener('click', () => applyCurrencyToggle('USD'));
+document.getElementById('btn-eur')?.addEventListener('click', () => applyCurrencyToggle('EUR'));
 
 // Currency labels on KPI boxes
 const _currLabel = _currency === 'EUR' ? '(EUR)' : '(USD)';
@@ -378,7 +425,7 @@ function calcMaxDrawdown(values) {
 }
 
 function fmtPct(v, decimals = 1) {
-  return (v >= 0 ? '+' : '') + v.toFixed(decimals) + '%';
+  return (v >= 0 ? '+' : '') + v.toFixed(decimals).replace('.', ',') + '%';
 }
 
 function buildChart(startDate) {
@@ -387,7 +434,7 @@ function buildChart(startDate) {
   if (startIdx < 0) startIdx = 0;
 
   // DAX + ETF: EUR; S&P 500: localStorage
-  const currency  = (_isDax || _isEtf) ? 'EUR' : (localStorage.getItem('currency') || 'USD');
+  const currency  = _isEurUni ? 'EUR' : (localStorage.getItem('currency') || 'EUR');
   const sym       = currency === 'EUR' ? '€' : '$';
 
   const labels    = allLabels.slice(startIdx);
@@ -397,13 +444,14 @@ function buildChart(startDate) {
 
   // Portfolio normieren
   const base = rawPort.find(v => v !== null) || 1;
+  const eurAtPortStart = eurSlice.find(v => v > 0) || startEurUsd;
   const portfolio = rawPort.map((v, i) => {
     if (v === null) return null;
     const scaled = v / base * startCapital;
     // ETF + DAX: Simulationswerte sind EUR-nativ → keine FX-Division
-    // S&P 500 EUR-Modus: USD-Werte in EUR umrechnen
-    if (_isEtf || _isDax) return Math.round(scaled);
-    return currency === 'EUR' ? Math.round(scaled / (eurSlice[i] || currentEurUsd)) : Math.round(scaled);
+    // S&P 500 EUR-Modus: USD-Werte in EUR umrechnen; eurAtPortStart korrigiert so dass Start=startCapital EUR
+    if (_isEurUni) return Math.round(scaled);
+    return currency === 'EUR' ? Math.round(scaled * eurAtPortStart / (eurSlice[i] || currentEurUsd)) : Math.round(scaled);
   });
 
   // Benchmark normieren
@@ -423,49 +471,50 @@ function buildChart(startDate) {
     });
   } else {
     // S&P 500 / DAX: Standard-Normierung auf Startkapital mit optionaler EUR-Umrechnung
+    // eurAtBenchStart: EUR/USD am ersten Benchmark-Datenpunkt → damit startet SPY bei startCapital EUR
+    const eurAtBenchStart = (!_isEurUni && currency === 'EUR')
+      ? (eurSlice[firstBenchIdx >= 0 ? firstBenchIdx : 0] || eurAtPortStart)
+      : 1;
     benchmark = rawBench.map((v, i) => {
       if (v === null) return null;
-      const usd = Math.round(v / baseBench * startCapital);
-      return currency === 'EUR' ? Math.round(usd / (eurSlice[i] || currentEurUsd)) : usd;
+      const normalized = Math.round(v / baseBench * startCapital);
+      // DAX: ^GDAXI ist EUR-nativ → keine FX-Umrechnung
+      // S&P 500: SPY ist USD-notiert → bei EUR-Modus mit eurAtBenchStart skalieren (Start = startCapital EUR)
+      return (!_isEurUni && currency === 'EUR') ? Math.round(normalized * eurAtBenchStart / (eurSlice[i] || currentEurUsd)) : normalized;
     });
   }
 
   // --- KPI Berechnung ---
-  const endPort  = [...rawPort].reverse().find(v => v !== null);
-  const endBench = [...rawBench].reverse().find(v => v !== null);
-  const eurStart = eurSlice.find(v => v > 0) || currentEurUsd;
-  const eurEnd   = [...eurSlice].reverse().find(v => v > 0) || currentEurUsd;
-  // ETF: Simulationswerte sind EUR-Basiseinheiten (kein FX-Faktor), wie DAX
-  // S&P 500 im EUR-Modus: FX-Faktor (USD→EUR) anwenden
-  const fxFactor = (!_isEtf && currency === 'EUR') ? (eurStart / eurEnd) : 1;
-  const maxDD    = calcMaxDrawdown(rawPort);
-
-  // Gesamt-Rendite Portfolio (voller Zeitraum ab Sim-Start)
+  // fxFactor: startEurUsd (am Input-Datum) / endEurUsd (am letzten Ranking-Datum)
+  // Entspricht exakt compare.php runSim() — NICHT currentEurUsd verwenden (kann neuer sein als Rankings).
+  // Drawdown aus nativen Simulationswerten (USD für S&P 500, EUR für DAX/HDAX)
+  const maxDD   = calcMaxDrawdown(!_isEurUni ? rawPort : portfolio);
+  const endPort = [...rawPort].reverse().find(v => v !== null);
+  const fxFactor = (!_isEurUni && currency === 'EUR') ? (startEurUsd / endEurUsd) : 1;
   const totalReturn = base > 0 ? ((endPort / base) * fxFactor - 1) * 100 : 0;
 
-  // Benchmark-Rendite + Outperformance:
-  // Für ETF startet MSCI ACWI erst später → nur gemeinsamen Zeitraum vergleichen
+  // Benchmark-Rendite + Outperformance
+  const endBench = [...rawBench].reverse().find(v => v !== null);
   let benchReturn, outperf, benchStartLabel = null;
   if (_isEtf && firstBenchIdx > 0) {
-    // Gemeinsamer Zeitraum ab firstBenchIdx (= erster ACWI-Datenpunkt)
-    // Portfolio in EUR-Basiseinheiten — kein FX-Faktor nötig
-    const portCommonStart  = portfolio[firstBenchIdx];
-    const portCommonEnd    = [...portfolio].reverse().find(v => v !== null);
-    const portReturnCommon = portCommonStart > 0 ? (portCommonEnd / portCommonStart - 1) * 100 : 0;
-
-    // ACWI EUR-Rendite: USD-Preisrendite × FX-Änderung (nur für den Benchmark-Zeitraum)
-    const rawBenchEnd    = [...rawBench].reverse().find(v => v !== null);
-    const eurAtBenchStart = (eurSlice[firstBenchIdx] > 0 ? eurSlice[firstBenchIdx] : currentEurUsd);
-    const eurAtEnd        = ([...eurSlice].reverse().find(v => v > 0) || currentEurUsd);
-    const benchFxFactor   = currency === 'EUR' ? (eurAtBenchStart / eurAtEnd) : 1;
-    benchReturn  = baseBench > 0 ? ((rawBenchEnd / baseBench) * benchFxFactor - 1) * 100 : 0;
+    // ETF: gemeinsamer Zeitraum ab erstem ACWI-Datenpunkt
+    const portCommonStart  = rawPort[firstBenchIdx];
+    const portCommonEnd    = endPort;
+    const portReturnCommon = portCommonStart > 0 ? ((portCommonEnd / portCommonStart) * fxFactor - 1) * 100 : 0;
+    const eurAtBenchStart  = (allEurRates[firstBenchIdx] > 0 ? allEurRates[firstBenchIdx] : startEurUsd);
+    const acwiFx           = eurAtBenchStart / endEurUsd;
+    benchReturn  = baseBench > 0 ? ((endBench / baseBench) * acwiFx - 1) * 100 : 0;
     outperf      = portReturnCommon - benchReturn;
-    benchStartLabel = labels[firstBenchIdx]; // z.B. "2009-10-30"
+    benchStartLabel = labels[firstBenchIdx];
   } else {
-    // S&P 500 / DAX / ETF (firstBenchIdx=0): voller gemeinsamer Zeitraum
-    // Benchmark-FX: ACWI/SPY sind USD → auch für ETF FX anwenden (Portfolio ist EUR-nativ, Benchmark nicht)
-    const benchFxElse = (_isDax) ? 1 : (currency === 'EUR' ? (eurStart / eurEnd) : 1);
-    benchReturn = baseBench > 0 ? ((endBench / baseBench) * benchFxElse - 1) * 100 : 0;
+    // S&P 500 / DAX / HDAX / ETF (firstBenchIdx=0): voller gemeinsamer Zeitraum
+    // ETF: ACWI ist USD-denominiert → FX-Umrechnung nötig obwohl Portfolio EUR-nativ
+    const eurAtSimStart0 = (_isEtf && allEurRates && allEurRates[0] > 0)
+      ? allEurRates[0] : startEurUsd;
+    const benchFx = _isEtf
+      ? (eurAtSimStart0 / endEurUsd)
+      : (_isEurUni ? 1 : (currency === 'EUR' ? (startEurUsd / endEurUsd) : 1));
+    benchReturn = baseBench > 0 ? ((endBench / baseBench) * benchFx - 1) * 100 : 0;
     outperf     = totalReturn - benchReturn;
   }
 
@@ -475,12 +524,12 @@ function buildChart(startDate) {
     kpiReturn.className = 'metric-value ' + (totalReturn >= 0 ? 'text-success' : 'text-danger');
   }
   const kpiDD = document.getElementById('kpiDrawdown');
-  if (kpiDD) kpiDD.textContent = '-' + maxDD.toFixed(1) + '%';
+  if (kpiDD) kpiDD.textContent = '-' + maxDD.toFixed(1).replace('.', ',') + '%';
 
   const kpiOut = document.getElementById('kpiOutperformance');
   if (kpiOut) {
     kpiOut.textContent = fmtPct(outperf);
-    kpiOut.className = 'metric-value ' + (outperf >= 0 ? 'text-success' : 'text-danger');
+    kpiOut.className = 'metric-value kpi-blue';
   }
   const kpiBench = document.getElementById('kpiBenchmark');
   if (kpiBench) kpiBench.textContent = fmtPct(benchReturn);
@@ -551,7 +600,7 @@ function buildChart(startDate) {
       plugins: {
         legend: {
           display: true,
-          labels: { color: '#495057', usePointStyle: true, boxWidth: 10 }
+          labels: { color: 'rgba(255,255,255,.4)', usePointStyle: true, boxWidth: 10 }
         },
         tooltip: {
           backgroundColor: '#ffffff',
@@ -567,13 +616,13 @@ function buildChart(startDate) {
       scales: {
         x: {
           stacked: true,
-          ticks: { color: '#6c757d', maxTicksLimit: 10, maxRotation: 0, autoSkip: true },
+          ticks: { color: 'rgba(255,255,255,.4)', maxTicksLimit: 10, maxRotation: 0, autoSkip: true },
           grid:  { display: false }
         },
         y: {
           stacked: true,
-          ticks: { color: '#6c757d', stepSize: 1, precision: 0 },
-          grid:  { color: 'rgba(0,0,0,.06)' },
+          ticks: { color: 'rgba(255,255,255,.4)', stepSize: 1, precision: 0 },
+          grid:  { color: 'rgba(255,255,255,.06)' },
           beginAtZero: true
         }
       }
@@ -590,7 +639,8 @@ function buildChart(startDate) {
   filteredLabels.forEach((d, i) => {
     const m = d.slice(0, 7);
     const rate = filteredEur[i] || currentEurUsd;
-    lastValByMonth[m] = currency === 'EUR' ? filteredPort[i] / rate : filteredPort[i];
+    // DAX: Portfolio-Werte EUR-nativ → keine FX-Division; S&P 500 EUR-Modus: durch EUR/USD dividieren
+    lastValByMonth[m] = (!_isEurUni && currency === 'EUR') ? filteredPort[i] / rate : filteredPort[i];
   });
   const months = Object.keys(lastValByMonth).sort();
 
@@ -640,15 +690,15 @@ function buildChart(startDate) {
       },
       scales: {
         x: {
-          ticks: { color: '#6c757d', maxTicksLimit: 10, maxRotation: 0, autoSkip: true },
+          ticks: { color: 'rgba(255,255,255,.4)', maxTicksLimit: 10, maxRotation: 0, autoSkip: true },
           grid:  { display: false }
         },
         y: {
           ticks: {
-            color: '#6c757d',
+            color: 'rgba(255,255,255,.4)',
             callback: v => (v >= 0 ? '+' : '') + v.toLocaleString('de-DE', {maximumFractionDigits: 0})
           },
-          grid: { color: 'rgba(0,0,0,.06)' }
+          grid: { color: 'rgba(255,255,255,.06)' }
         }
       }
     }
@@ -673,7 +723,7 @@ function buildChart(startDate) {
           pointHoverRadius: 4,
         },
         {
-          label: _isEtf ? 'MSCI ACWI (ACWI)' : '<?= $isDax ? 'DAX (^GDAXI)' : 'S&P 500 (SPY)' ?>',
+          label: _isEtf ? 'MSCI ACWI (ACWI)' : '<?= $isHdax ? 'HDAX (^HDAX)' : ($isDax ? 'DAX (^GDAXI)' : 'S&P 500 (SPY)') ?>',
           data: benchmark,
           borderColor: '#60a5fa',
           backgroundColor: 'transparent',
@@ -691,7 +741,7 @@ function buildChart(startDate) {
       maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
       plugins: {
-        legend: { labels: { color: '#495057', usePointStyle: true } },
+        legend: { labels: { color: 'rgba(255,255,255,.4)', usePointStyle: true } },
         tooltip: {
           backgroundColor: '#ffffff',
           borderColor: '#dee2e6',
@@ -699,6 +749,11 @@ function buildChart(startDate) {
           titleColor: '#212529',
           bodyColor: '#6c757d',
           callbacks: {
+            title: items => {
+              const iso = items[0]?.label ?? '';
+              const [y,m,d] = iso.split('-');
+              return d && m && y ? `${d}.${m}.${y}` : iso;
+            },
             label: ctx => {
               const v = ctx.parsed.y;
               const fmt = v ? (currency === 'EUR' ? sym + v.toLocaleString('de-DE', {maximumFractionDigits:0}) : v.toLocaleString('de-DE', {style:'currency', currency:'USD', maximumFractionDigits:0})) : '—';
@@ -710,7 +765,7 @@ function buildChart(startDate) {
       scales: {
         x: {
           ticks: {
-            color: '#6c757d',
+            color: 'rgba(255,255,255,.4)',
             maxTicksLimit: 10,
             maxRotation: 0,
             autoSkip: true,
@@ -719,14 +774,14 @@ function buildChart(startDate) {
               return d ? d.slice(5, 7) + '/' + d.slice(0, 4) : '';
             }
           },
-          grid: { color: 'rgba(0,0,0,.06)' }
+          grid: { color: 'rgba(255,255,255,.06)' }
         },
         y: {
           ticks: {
-            color: '#6c757d',
+            color: 'rgba(255,255,255,.4)',
             callback: v => sym + v.toLocaleString('de-DE', {maximumFractionDigits: 0})
           },
-          grid: { color: 'rgba(0,0,0,.06)' }
+          grid: { color: 'rgba(255,255,255,.06)' }
         }
       }
     }
@@ -743,7 +798,7 @@ if (!urlStart) {
   const _startKey = 'sim_start_date_' + (<?= json_encode($universe) ?>);
   const simStart = localStorage.getItem(_startKey) || _defStart;
   // ETF: Kapital immer EUR 50.000 (localStorage kann veralteten Wert enthalten)
-  const simCapital = _isEtf ? 50000 : localStorage.getItem('sim_capital');
+  const simCapital = _isEtf ? 50000 : localStorage.getItem('sim_capital_' + (<?= json_encode($universe) ?>));
   const p = new URLSearchParams(urlParams);
   p.set('start_date', simStart);
   if (simCapital) p.set('capital', parseInt(simCapital));

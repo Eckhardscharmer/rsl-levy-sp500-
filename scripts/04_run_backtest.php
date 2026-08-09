@@ -6,7 +6,8 @@
  * Sektor-Diversifikation, Equal Weight
  *
  * Aufruf:
- *   php scripts/04_run_backtest.php
+ *   php scripts/04_run_backtest.php              # vollständiger Neuaufbau
+ *   php scripts/04_run_backtest.php --latest     # nur neue Wochen seit letztem Lauf
  *   php scripts/04_run_backtest.php --capital=50000
  */
 
@@ -14,57 +15,130 @@ chdir(dirname(__DIR__));
 require_once 'config/database.php';
 
 // ---- Parameter ----
-$args    = array_slice($argv, 1);
-$capital = 100000.0;
+$args       = array_slice($argv, 1);
+$capital    = 100000.0;
+$latestOnly = in_array('--latest', $args);
 foreach ($args as $a) {
     if (preg_match('/--capital=(\d+)/', $a, $m)) $capital = (float)$m[1];
 }
 
 define('TOP_N',            5);
-define('HOLD_RANK',        125);    // Verkauf wenn Rang > 125
+define('HOLD_RANK',        125);
 define('BACKTEST_START',   '2010-01-04');
-
-echo "=== Backtest Engine ===\n";
-echo "Startkapital:       " . number_format($capital, 2) . " USD\n";
-echo "Haltekriterium:     Rang <= " . HOLD_RANK . " (Verkauf wenn darunter)\n";
-echo "Start:              " . BACKTEST_START . "\n\n";
 
 $db = getDB();
 
-// Backtest-Konfiguration anlegen
-$db->prepare(
-    'DELETE FROM backtest_configs WHERE name = "RSL_Top5_Weekly"'
-)->execute();
+// ── --latest Modus: nur neue Wochen seit letztem Backtest-Eintrag ────────────
+if ($latestOnly) {
+    // Bestehende Config laden
+    $cfg = $db->query('SELECT * FROM backtest_configs WHERE name = "RSL_Top5_Weekly" LIMIT 1')->fetch();
+    if (!$cfg) {
+        echo "[--latest] Kein bestehender Backtest gefunden — führe vollständigen Lauf aus.\n";
+        $latestOnly = false;
+    } else {
+        $configId = (int)$cfg['id'];
+        $capital  = (float)$cfg['initial_capital'];
 
-$db->prepare(
-    'INSERT INTO backtest_configs
-       (name, start_date, end_date, initial_capital, num_positions,
-        sma_weeks, transaction_cost, sector_diversify)
-     VALUES (?, ?, ?, ?, 5, 26, ?, 1)'
-)->execute(['RSL_Top5_Weekly', BACKTEST_START, date('Y-m-d'), $capital, 0]);
-$configId = $db->lastInsertId();
+        // Letztes verarbeitetes Datum
+        $lastDate = $db->prepare(
+            'SELECT MAX(value_date) FROM backtest_portfolio_values WHERE config_id = ?'
+        );
+        $lastDate->execute([$configId]);
+        $lastProcessed = $lastDate->fetchColumn();
 
-// Alle berechneten Sonntage laden
-$sundays = $db->query(
-    "SELECT DISTINCT ranking_date FROM rsl_rankings
-     WHERE ranking_date >= '" . BACKTEST_START . "'
-     ORDER BY ranking_date"
-)->fetchAll(PDO::FETCH_COLUMN);
+        // Neue Sonntage seit letztem Lauf
+        $stmt = $db->prepare(
+            "SELECT DISTINCT ranking_date FROM rsl_rankings
+             WHERE ranking_date > ? AND universe = 'sp500'
+             ORDER BY ranking_date"
+        );
+        $stmt->execute([$lastProcessed]);
+        $sundays = $stmt->fetchAll(PDO::FETCH_COLUMN);
 
-if (empty($sundays)) {
-    die("[FEHLER] Keine RSL-Rankings vorhanden. Erst script 03 ausführen.\n");
+        if (empty($sundays)) {
+            echo "[--latest] Keine neuen Wochen seit $lastProcessed — nichts zu tun.\n";
+            exit(0);
+        }
+
+        echo "=== Backtest Engine (--latest) ===\n";
+        echo "Neue Wochen: " . count($sundays) . " (ab " . $sundays[0] . ")\n\n";
+
+        // Portfolio-Stand rekonstruieren aus offenen BUY-Trades (kein matching SELL danach)
+        $openTrades = $db->prepare(
+            "SELECT t.ticker, t.price as buy_price, t.shares, t.sector, t.rsl_at_trade as rsl_buy
+             FROM backtest_trades t
+             WHERE t.config_id = ? AND t.action = 'BUY'
+               AND NOT EXISTS (
+                   SELECT 1 FROM backtest_trades s
+                   WHERE s.config_id = t.config_id AND s.ticker = t.ticker
+                     AND s.action = 'SELL' AND s.trade_date > t.trade_date
+               )
+             ORDER BY t.trade_date DESC"
+        );
+        $openTrades->execute([$configId]);
+        $holdings = [];
+        foreach ($openTrades->fetchAll() as $t) {
+            if (!isset($holdings[$t['ticker']])) {
+                $holdings[$t['ticker']] = [
+                    'shares'    => (float)$t['shares'],
+                    'buy_price' => (float)$t['buy_price'],
+                    'sector'    => $t['sector'],
+                    'rsl_buy'   => (float)$t['rsl_buy'],
+                ];
+            }
+        }
+
+        // Cash rekonstruieren aus letztem Portfolio-Value-Eintrag
+        $lastPV = $db->prepare(
+            'SELECT portfolio_value, cash FROM backtest_portfolio_values
+             WHERE config_id = ? ORDER BY value_date DESC LIMIT 1'
+        );
+        $lastPV->execute([$configId]);
+        $pvRow = $lastPV->fetch();
+        $cash  = $pvRow ? (float)$pvRow['cash'] : $capital;
+
+        echo "Portfolio-Stand rekonstruiert: " . count($holdings) . " Positionen, Cash: " . number_format($cash, 2) . "\n\n";
+
+        // Config end_date aktualisieren
+        $db->prepare('UPDATE backtest_configs SET end_date = ? WHERE id = ?')
+           ->execute([date('Y-m-d'), $configId]);
+    }
 }
 
-echo "Simuliere " . count($sundays) . " Wochen...\n\n";
+// ── Vollständiger Modus ───────────────────────────────────────────────────────
+if (!$latestOnly) {
+    echo "=== Backtest Engine ===\n";
+    echo "Startkapital:       " . number_format($capital, 2) . " USD\n";
+    echo "Haltekriterium:     Rang <= " . HOLD_RANK . " (Verkauf wenn darunter)\n";
+    echo "Start:              " . BACKTEST_START . "\n\n";
 
-// is_selected zurücksetzen — Backtest setzt es neu anhand tatsächlicher Holdings
-$db->exec(
-    "UPDATE rsl_rankings SET is_selected = 0 WHERE ranking_date >= '" . BACKTEST_START . "'"
-);
+    $db->prepare('DELETE FROM backtest_configs WHERE name = "RSL_Top5_Weekly"')->execute();
+    $db->prepare(
+        'INSERT INTO backtest_configs
+           (name, start_date, end_date, initial_capital, num_positions,
+            sma_weeks, transaction_cost, sector_diversify)
+         VALUES (?, ?, ?, ?, 5, 26, ?, 1)'
+    )->execute(['RSL_Top5_Weekly', BACKTEST_START, date('Y-m-d'), $capital, 0]);
+    $configId = $db->lastInsertId();
+
+    $sundays = $db->query(
+        "SELECT DISTINCT ranking_date FROM rsl_rankings
+         WHERE ranking_date >= '" . BACKTEST_START . "' AND universe = 'sp500'
+         ORDER BY ranking_date"
+    )->fetchAll(PDO::FETCH_COLUMN);
+
+    if (empty($sundays)) die("[FEHLER] Keine RSL-Rankings vorhanden. Erst script 03 ausführen.\n");
+
+    echo "Simuliere " . count($sundays) . " Wochen...\n\n";
+
+    $db->exec("UPDATE rsl_rankings SET is_selected = 0 WHERE ranking_date >= '" . BACKTEST_START . "'");
+
+    $cash     = $capital;
+    $holdings = [];
+}
 
 // ---- Portfolio-Zustand ----
-$cash        = $capital;
-$holdings    = [];   // ticker => ['shares', 'buy_price', 'sector', 'rsl_buy']
+// (im --latest Modus bereits oben aus DB rekonstruiert)
 $totalTrades = 0;
 
 $stmtTrade = $db->prepare(
@@ -88,7 +162,7 @@ if (!$spyStart) $spyStart = getPrice($db, '^GSPC', BACKTEST_START);
 
 // M&A-Flags laden (nur für aktuelle Woche relevant, nicht für historische Daten)
 $maFlagged = [];
-$maStmt = $db->query('SELECT ticker FROM m_and_a_flags WHERE is_active = 1');
+$maStmt = $db->query('SELECT ticker FROM m_and_a_flags WHERE is_active = 1 AND (expires_date IS NULL OR expires_date > CURDATE())');
 foreach ($maStmt->fetchAll(PDO::FETCH_COLUMN) as $t) {
     $maFlagged[$t] = true;
 }

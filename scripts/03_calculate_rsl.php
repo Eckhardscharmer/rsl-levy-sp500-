@@ -5,10 +5,10 @@
  * Berechnet wöchentliche RSL-Rankings mit Sektor-Diversifikation (Top 5, je ein Sektor)
  *
  * Aufruf:
- *   php scripts/03_calculate_rsl.php                     # S&P 500, alle Sonntage
- *   php scripts/03_calculate_rsl.php --universe=dax      # DAX, alle Sonntage
+ *   php scripts/03_calculate_rsl.php                     # S&P 500, alle Freitage
+ *   php scripts/03_calculate_rsl.php --universe=dax      # DAX, alle Freitage
  *   php scripts/03_calculate_rsl.php 2024-01-07          # ab bestimmtem Datum
- *   php scripts/03_calculate_rsl.php --latest            # nur letzten Sonntag
+ *   php scripts/03_calculate_rsl.php --latest            # nur letzten Freitag
  */
 
 chdir(dirname(__DIR__));
@@ -24,22 +24,22 @@ $universe    = 'sp500';
 foreach ($args as $a) {
     if (preg_match('/^--universe=(.+)$/', $a, $m)) $universe = $m[1];
 }
-if (!in_array($universe, ['sp500', 'dax'])) $universe = 'sp500';
+if (!in_array($universe, ['sp500', 'dax', 'hdax'])) $universe = 'sp500';
 $dateArg     = array_values(array_filter($args, fn($a) => preg_match('/^\d{4}-\d{2}-\d{2}$/', $a)))[0] ?? null;
 
 $db = getDB();
 
-// Sonntage berechnen
+// Freitage berechnen (Stichtag = letzter Handelstag der Woche)
 if ($latestOnly) {
-    $sundays = [lastSunday()];
+    $fridays = [lastFriday()];
 } else {
-    $start = $dateArg ?? '2010-01-04'; // erster Sonntag 2010
-    $sundays = getSundays($start, date('Y-m-d'));
+    $start = $dateArg ?? '2010-01-08'; // erster Freitag 2010
+    $fridays = getFridays($start, date('Y-m-d'));
 }
 
 echo "=== RSL Engine ===\n";
 echo "Universe: " . strtoupper($universe) . "\n";
-echo "Berechne " . count($sundays) . " Sonntage (SMA = " . SMA_DAYS . " Tage, Top " . TOP_N . " mit Sektor-Diversifikation)\n\n";
+echo "Berechne " . count($fridays) . " Freitage (SMA = " . SMA_DAYS . " Tage, Top " . TOP_N . " mit Sektor-Diversifikation)\n\n";
 
 $stmtInsert = $db->prepare(
     'INSERT INTO rsl_rankings
@@ -58,7 +58,7 @@ $stmtInsert = $db->prepare(
 // Aktive M&A-Flags laden (nur für aktuellen Lauf relevant)
 $maFlagged = [];
 $maStmt = $db->query(
-    'SELECT ticker FROM m_and_a_flags WHERE is_active = 1'
+    'SELECT ticker FROM m_and_a_flags WHERE is_active = 1 AND (expires_date IS NULL OR expires_date > CURDATE())'
 );
 foreach ($maStmt->fetchAll(PDO::FETCH_COLUMN) as $t) {
     $maFlagged[$t] = true;
@@ -70,20 +70,22 @@ if (!empty($maFlagged)) {
 // S&P 500-Mitglieder pro Datum (gecacht)
 $membershipCache = [];
 
-foreach ($sundays as $idx => $sunday) {
+foreach ($fridays as $idx => $friday) {
     // Index-Mitglieder an diesem Datum
-    $members = $universe === 'dax'
-        ? getDAXMembers($db, $sunday, $membershipCache)
-        : getSP500Members($db, $sunday, $membershipCache);
+    $members = match($universe) {
+        'dax'   => getDAXMembers($db, $friday, $membershipCache),
+        'hdax'  => getHDAXMembers($db, $friday, $membershipCache),
+        default => getSP500Members($db, $friday, $membershipCache),
+    };
     if (empty($members)) {
-        echo "[$sunday] Keine Mitglieder gefunden, überspringe.\n";
+        echo "[$friday] Keine Mitglieder gefunden, überspringe.\n";
         continue;
     }
 
-    // Kursdaten: letzter Handelstag <= Sonntag + SMA-Periode davor
-    $latestDay = getLastTradingDay($db, $sunday, $universe);
+    // Kursdaten: letzter Handelstag <= Freitag (i.d.R. Freitag selbst, außer Feiertag → Donnerstag)
+    $latestDay = getLastTradingDay($db, $friday, $universe);
     if (!$latestDay) {
-        echo "[$sunday] Kein Handelstag gefunden.\n";
+        echo "[$friday] Kein Handelstag gefunden.\n";
         continue;
     }
 
@@ -103,7 +105,7 @@ foreach ($sundays as $idx => $sunday) {
     }
 
     if (empty($rankings)) {
-        echo "[$sunday] Keine RSL-Daten berechnet.\n";
+        echo "[$friday] Keine RSL-Daten berechnet.\n";
         continue;
     }
 
@@ -128,7 +130,7 @@ foreach ($sundays as $idx => $sunday) {
     $db->beginTransaction();
     foreach ($rankings as $r) {
         $stmtInsert->execute([
-            ':date'         => $sunday,
+            ':date'         => $friday,
             ':ticker'       => $r['ticker'],
             ':sector'       => $r['sector'],
             ':price'        => $r['price'],
@@ -142,8 +144,38 @@ foreach ($sundays as $idx => $sunday) {
     }
     $db->commit();
 
+    // ── Anomalie-Erkennung: RSL-Sprung > 0.5 in einer Woche → zur Prüfung flaggen ──
+    $anomalyStmt = $db->prepare(
+        "SELECT r.ticker, r.rsl, prev.rsl as prev_rsl, (r.rsl - prev.rsl) as sprung,
+                r.current_price, prev.current_price as prev_price
+         FROM rsl_rankings r
+         JOIN rsl_rankings prev ON prev.ticker = r.ticker AND prev.universe = r.universe
+           AND prev.ranking_date = (
+             SELECT MAX(ranking_date) FROM rsl_rankings
+             WHERE ticker = r.ticker AND universe = r.universe AND ranking_date < r.ranking_date
+           )
+         WHERE r.ranking_date = ? AND r.universe = ?
+           AND (r.rsl - prev.rsl) > 0.5
+           AND r.ticker NOT IN (SELECT ticker FROM m_and_a_flags WHERE is_active = 1 AND (expires_date IS NULL OR expires_date > CURDATE()))"
+    );
+    $anomalyStmt->execute([$friday, $universe]);
+    $anomalies = $anomalyStmt->fetchAll();
+    foreach ($anomalies as $a) {
+        $pctPrice = $a['prev_price'] > 0 ? round(($a['current_price'] / $a['prev_price'] - 1) * 100, 1) : 0;
+        $headline = sprintf(
+            'AUTOMATISCH GEFLAGGED: RSL-Sprung +%.2f (%.4f → %.4f), Kurs %+.1f%% — bitte auf Corporate Action prüfen',
+            $a['sprung'], $a['prev_rsl'], $a['rsl'], $pctPrice
+        );
+        $db->prepare(
+            "INSERT INTO m_and_a_flags (ticker, headline, is_active, flagged_date)
+             VALUES (?, ?, 0, ?)
+             ON DUPLICATE KEY UPDATE headline=VALUES(headline), flagged_date=VALUES(flagged_date)"
+        )->execute([$a['ticker'], $headline, $friday]);
+        echo "  ⚠ ANOMALIE: {$a['ticker']} RSL-Sprung +" . round($a['sprung'], 2) . " — zur Prüfung geflagged (is_active=0)\n";
+    }
+
     if (($idx + 1) % 10 === 0 || $latestOnly) {
-        echo "[$sunday] " . count($rankings) . " Aktien | Top 5: "
+        echo "[$friday] " . count($rankings) . " Aktien | Top 5: "
              . implode(', ', array_column($selected, 'ticker'))
              . " | RSL: " . implode(', ', array_map(fn($s) => round($s['rsl'], 3), $selected))
              . "\n";
@@ -153,7 +185,7 @@ foreach ($sundays as $idx => $sunday) {
 echo "\n=== RSL-Berechnung abgeschlossen ===\n";
 
 // Aktuelles Top-5 anzeigen
-$latestSunday = lastSunday();
+$latestFriday = lastFriday();
 $top5 = $db->prepare(
     'SELECT r.ticker, s.name, r.sector, r.current_price, r.sma_26w, r.rsl, r.rank_overall
      FROM rsl_rankings r
@@ -161,10 +193,10 @@ $top5 = $db->prepare(
      WHERE r.ranking_date = ? AND r.is_selected = 1 AND r.universe = ?
      ORDER BY r.rsl DESC'
 );
-$top5->execute([$latestSunday, $universe]);
+$top5->execute([$latestFriday, $universe]);
 $top5rows = $top5->fetchAll();
 
-echo "\nAktuelles Top-5 ($latestSunday):\n";
+echo "\nAktuelles Top-5 ($latestFriday):\n";
 echo str_pad('Ticker', 8) . str_pad('Name', 35) . str_pad('Sektor', 30) . str_pad('Kurs', 10) . str_pad('SMA26W', 10) . "RSL\n";
 echo str_repeat('-', 100) . "\n";
 foreach ($top5rows as $r) {
@@ -182,27 +214,28 @@ echo "\nNächster Schritt: php scripts/04_run_backtest.php\n";
 // HILFSFUNKTIONEN
 // ============================================================
 
-function lastSunday(): string {
-    $ts = strtotime('last sunday');
-    // Falls heute Sonntag ist
-    if (date('N') == 7) $ts = time();
-    return date('Y-m-d', $ts);
+function lastFriday(): string {
+    $dow = (int)date('N'); // 1=Mo ... 5=Fr, 6=Sa, 7=So
+    if ($dow == 5) return date('Y-m-d');           // heute ist Freitag
+    if ($dow == 6) return date('Y-m-d', strtotime('yesterday')); // Sa → gestern (Fr)
+    if ($dow == 7) return date('Y-m-d', strtotime('-2 days'));   // So → vorgestern (Fr)
+    return date('Y-m-d', strtotime('last friday'));              // Mo–Do → letzten Freitag
 }
 
-function getSundays(string $from, string $to): array {
-    $sundays = [];
+function getFridays(string $from, string $to): array {
+    $fridays = [];
     $ts = strtotime($from);
-    // Auf nächsten Sonntag justieren
+    // Auf nächsten Freitag justieren
     $dayOfWeek = (int)date('N', $ts);
-    if ($dayOfWeek !== 7) {
-        $ts = strtotime('next sunday', $ts);
+    if ($dayOfWeek !== 5) {
+        $ts = strtotime('next friday', $ts);
     }
     $end = strtotime($to);
     while ($ts <= $end) {
-        $sundays[] = date('Y-m-d', $ts);
+        $fridays[] = date('Y-m-d', $ts);
         $ts = strtotime('+7 days', $ts);
     }
-    return $sundays;
+    return $fridays;
 }
 
 function getSP500Members(PDO $db, string $date, array &$cache): array {
@@ -251,9 +284,31 @@ function getDAXMembers(PDO $db, string $date, array &$cache): array
     return $result;
 }
 
+function getHDAXMembers(PDO $db, string $date, array &$cache): array
+{
+    if (isset($cache['hdax_' . $date])) return $cache['hdax_' . $date];
+
+    // HDAX = DAX (dax_membership) + MDAX (stocks.universe='hdax')
+    $stmt = $db->prepare(
+        'SELECT s.ticker, COALESCE(s.sector, "Unknown") as sector
+         FROM stocks s
+         WHERE s.universe IN ("dax", "hdax")
+         GROUP BY s.ticker'
+    );
+    $stmt->execute();
+    $rows = $stmt->fetchAll();
+
+    $result = [];
+    foreach ($rows as $r) {
+        $result[$r['ticker']] = $r['sector'];
+    }
+    $cache['hdax_' . $date] = $result;
+    return $result;
+}
+
 function getLastTradingDay(PDO $db, string $refDate, string $universe = 'sp500'): ?string {
     // Referenz-Ticker je nach Universe
-    $refTicker = $universe === 'dax' ? 'SAP.DE' : 'SPY';
+    $refTicker = in_array($universe, ['dax', 'hdax']) ? 'SAP.DE' : 'SPY';
     $stmt = $db->prepare(
         'SELECT MAX(price_date) FROM prices WHERE price_date <= ? AND ticker = ?'
     );

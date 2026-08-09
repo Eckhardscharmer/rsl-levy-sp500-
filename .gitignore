@@ -19,6 +19,9 @@ design.jpeg
 # Logs
 logs/
 
+# Lokale Backups (DB-Dumps, Archive) - nicht fürs Repo, zu groß/sensibel
+backups/
+
 # Python cache
 __pycache__/
 *.pyc

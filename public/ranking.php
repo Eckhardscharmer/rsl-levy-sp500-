@@ -4,9 +4,11 @@ $rsl = new RSLEngine();
 $db  = getDB();
 
 $universe = $_GET['universe'] ?? 'sp500';
-if (!in_array($universe, ['sp500', 'dax', 'etf'])) $universe = 'sp500';
-$isDax    = ($universe === 'dax');
-$isEtf    = ($universe === 'etf');
+if (!in_array($universe, ['sp500', 'dax', 'hdax', 'etf'])) $universe = 'sp500';
+$isDax        = ($universe === 'dax');
+$isHdax       = ($universe === 'hdax');
+$isEtf        = ($universe === 'etf');
+$isEurUniverse = ($isDax || $isHdax || $isEtf);
 
 $latestDate = $rsl->getLatestRankingDate($universe);
 $date       = $_GET['date'] ?? $latestDate;
@@ -36,37 +38,41 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RS Ranking — <?= $isEtf ? 'ETF Multi-Asset' : ($isDax ? 'DAX' : 'S&P 500') ?></title>
+<title>RS Ranking — <?= $isEtf ? 'ETF Multi-Asset' : ($isHdax ? 'HDAX' : ($isDax ? 'DAX' : 'S&P 500')) ?></title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
 <style>
-  body { background: #f5f7fa; }
+  body { background: #0a0f1e; color: #e2e8f0; font-family: 'Inter', sans-serif; }
   .navbar { background: #0f172a !important; border-bottom: 1px solid #1e2d4a; box-shadow: 0 2px 12px rgba(0,0,0,.3); min-height: 56px; }
   .navbar .container-fluid { min-height: 56px; height: auto; }
   .navbar .navbar-brand { color: #fff !important; font-weight: 700; padding: 0; }
   .navbar .nav-link { color: rgba(255,255,255,.6) !important; padding: .375rem .65rem !important; font-size: .875rem; }
   .navbar .nav-link:hover { color: #fff !important; }
-  .card { background: #ffffff; border: 1px solid #dee2e6; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
-  .card-header { background: #f8f9fa; border-bottom: 1px solid #dee2e6; font-weight: 600; }
-  .table { --bs-table-bg: transparent; }
-  .table th { color: #6c757d; font-weight: 500; font-size: .76rem; text-transform: uppercase; letter-spacing: .4px; border-color: #dee2e6; }
-  .table td { border-color: #dee2e6; vertical-align: middle; font-size: .82rem; }
-  .table tbody tr:hover { background: #f8f9fa; cursor: default; }
-  .portfolio-row { background: rgba(37,99,235,.04) !important; }
-  .portfolio-row td:first-child { border-left: 3px solid #2563eb; }
+  .card { background: #111827; border: 1px solid rgba(255,255,255,.08); border-radius: 12px; }
+  .card-header { background: #0f172a; border-bottom: 1px solid rgba(255,255,255,.08); font-weight: 600; color: #f1f5f9; }
+  .table { --bs-table-bg: transparent; --bs-table-color: #e2e8f0; }
+  .table th { color: rgba(255,255,255,.4); font-weight: 700; font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; border-color: rgba(255,255,255,.06); }
+  .table td { border-color: rgba(255,255,255,.06); vertical-align: middle; font-size: .82rem; color: #e2e8f0; }
+  .table tbody tr:hover { background: rgba(255,255,255,.03); cursor: default; }
+  .portfolio-row { background: rgba(37,99,235,.1) !important; }
+  .portfolio-row td:first-child { border-left: 3px solid #3b82f6; }
   .portfolio-badge { display:inline-flex; align-items:center; gap:.3rem;
-    background:#dbeafe; color:#1d4ed8; border-radius:5px;
+    background:rgba(29,78,216,.25); color:#93c5fd; border:1px solid rgba(29,78,216,.4); border-radius:5px;
     padding:.1em .45em; font-size:.68rem; font-weight:700;
     letter-spacing:.02em; white-space:nowrap; margin-right:.35rem; }
-  .rsl-bar { height: 6px; border-radius: 3px; background: #e9ecef; }
+  .rsl-bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,.1); }
   .rsl-bar-fill { height: 6px; border-radius: 3px; }
-  .sector-badge { font-size: .82rem; background: #f0f2f5; color: #6c757d; padding: .15em .55em; border-radius: 20px; white-space: nowrap; }
+  .sector-badge { font-size: .82rem; background: rgba(255,255,255,.08); color: rgba(255,255,255,.6); padding: .15em .55em; border-radius: 20px; white-space: nowrap; }
   .rsl-value { font-size: .82rem; font-weight: 700; }
   .nav-link.active { color: #fff !important; font-weight: 600; }
   html { overflow-y: scroll; }
   .currency-toggle { background: rgba(255,255,255,.1); border-radius: 20px; padding: 2px; display: flex; align-items: center; }
   .cur-btn { background: transparent; border: none; color: rgba(255,255,255,.45); font-size: .75rem; font-weight: 700; padding: .2rem .65rem; border-radius: 18px; cursor: pointer; transition: all .15s; line-height: 1.6; }
   .cur-btn.active { background: #2563eb; color: #fff; box-shadow: 0 0 0 2px rgba(37,99,235,.4); }
+  .form-select { background-color: #1e293b; border-color: rgba(255,255,255,.12); color: #f1f5f9; }
+  .form-select:focus { background-color: #1e293b; border-color: #3b82f6; color: #f1f5f9; box-shadow: none; }
+  .form-select option { background: #1e293b; color: #f1f5f9; }
+  .text-muted { color: rgba(255,255,255,.4) !important; }
 </style>
 </head>
 <body>
@@ -97,8 +103,8 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
     <div class="card-header d-flex justify-content-between align-items-center">
       <span><i class="bi bi-list-ol me-2"></i>8 Anlageklassen &nbsp;·&nbsp; Monatliches Rebalancing</span>
       <span class="text-muted small">
-        <span class="portfolio-badge me-2" style="background:#d1fae5;color:#065f46;">● Top 3</span>= Kaufsignal (RS-Rang + SMA200-Filter) &nbsp;·&nbsp;
-        RS = Kurs / SMA 27 Wochen
+        <span class="portfolio-badge me-2" style="background:#d1fae5;color:#065f46;">● Top 3</span>= Kaufsignal (RSL-Rang + SMA200-Filter) &nbsp;·&nbsp;
+        RSL = Kurs / SMA 27 Wochen
       </span>
     </div>
     <div class="card-body p-0">
@@ -114,7 +120,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
             <th class="text-end">SMA 27W</th>
             <th class="text-end">SMA 200</th>
             <th class="text-center">Trend</th>
-            <th class="text-end" style="width:160px">RS</th>
+            <th class="text-end" style="width:160px">RSL</th>
           </tr>
         </thead>
         <tbody>
@@ -122,8 +128,13 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
         $maxRsl = !empty($ranking) ? max(array_column($ranking, 'rsl')) : 2;
         $etfMap = [
             '^GSPC'  => 'SXR8',   '^NDX'  => 'EQQQ',  '^STOXX' => 'EXSA',
-            '^N225'  => 'DBXJ',   'EEM'   => 'XMME',  'GC=F'   => 'Xetra-Gold',
-            'AGG'    => 'IGLO',   'SHY'   => 'Geldmarkt-ETF',
+            '^N225'  => 'DBX0NJ', 'EEM'   => 'XMME',  'GC=F'   => 'Xetra-Gold',
+            'AGG'    => 'IGLO',   'SHY'   => 'XEON',
+        ];
+        $etfWknMap = [
+            '^GSPC'  => 'A0YEDG', '^NDX'  => '801498', '^STOXX' => '263530',
+            '^N225'  => 'DBX0NJ', 'EEM'   => 'A12GVR', 'GC=F'   => 'A0S9GB',
+            'AGG'    => 'A0RGEM', 'SHY'   => 'DBX0AN',
         ];
         foreach ($ranking as $r):
           $rslPct    = min(100, ($r['rsl'] / max($maxRsl, 0.01)) * 100);
@@ -131,6 +142,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
           $aboveSma  = $r['sma_200'] && $r['current_price'] > $r['sma_200'];
           $isTop3    = $r['is_selected'] == 1;
           $etfTicker = $etfMap[$r['ticker']] ?? '';
+          $etfWkn    = $etfWknMap[$r['ticker']] ?? '';
         ?>
           <tr class="<?= $isTop3 ? 'portfolio-row' : '' ?>">
             <td class="ps-3 fw-600">
@@ -142,7 +154,14 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
             </td>
             <td style="font-weight:700;font-size:.85rem;"><?= htmlspecialchars($r['ticker']) ?></td>
             <td><?= htmlspecialchars($r['name'] ?? '') ?></td>
-            <td class="text-muted" style="font-size:.8rem;"><?= htmlspecialchars($etfTicker) ?></td>
+            <td style="font-size:.8rem;">
+              <?php if ($etfTicker): ?>
+                <span style="color:#e2e8f0;"><?= htmlspecialchars($etfTicker) ?></span>
+                <?php if ($etfWkn): ?>
+                  <br><span style="color:rgba(255,255,255,.35);font-size:.72rem;">WKN <?= htmlspecialchars($etfWkn) ?></span>
+                <?php endif; ?>
+              <?php endif; ?>
+            </td>
             <td class="text-end"><?= number_format($r['current_price'], 2) ?></td>
             <td class="text-end text-muted"><?= number_format($r['sma_27w'] ?? $r['sma_26w'] ?? 0, 2) ?></td>
             <td class="text-end text-muted"><?= $r['sma_200'] ? number_format($r['sma_200'], 2) : '—' ?></td>
@@ -196,7 +215,7 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
       <span><i class="bi bi-list-ol me-2"></i><?= count($ranking) ?> Aktien</span>
       <span class="text-muted small">
         <span class="portfolio-badge me-2">● Portfolio</span>= aktuelle Simulation &nbsp;·&nbsp;
-        RS = Kurs / SMA 26 Wochen
+        RSL = Kurs / SMA 26 Wochen
       </span>
     </div>
     <div class="card-body p-0">
@@ -208,9 +227,9 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
             <th style="width:80px">Ticker</th>
             <th>Name</th>
             <th>Sektor</th>
-            <th class="text-end" id="th-kurs">Kurs (<?= $isDax ? 'EUR' : 'USD' ?>)</th>
-            <th class="text-end" id="th-sma">SMA 26W (<?= $isDax ? 'EUR' : 'USD' ?>)</th>
-            <th class="text-end" style="width:180px">RS</th>
+            <th class="text-end" id="th-kurs">Kurs (<?= $isEurUniverse ? 'EUR' : 'USD' ?>)</th>
+            <th class="text-end" id="th-sma">SMA 26W (<?= $isEurUniverse ? 'EUR' : 'USD' ?>)</th>
+            <th class="text-end" style="width:180px">RSL</th>
           </tr>
         </thead>
         <tbody>
@@ -258,8 +277,10 @@ $currentEurUsd = (float)($db->query("SELECT adj_close FROM prices WHERE ticker='
 <script>
 // Currency toggle
 const _isDax       = <?= $isDax ? 'true' : 'false' ?>;
+const _isHdax      = <?= $isHdax ? 'true' : 'false' ?>;
 const _isEtf       = <?= $isEtf ? 'true' : 'false' ?>;
-const _currency    = (_isDax || _isEtf) ? 'EUR' : (localStorage.getItem('currency') || 'USD');
+const _isEurUni    = (_isDax || _isHdax || _isEtf);
+const _currency    = _isEurUni ? 'EUR' : (localStorage.getItem('currency') || 'USD');
 const currentEurUsd = <?= round($currentEurUsd, 6) ?>;
 document.getElementById('btn-usd')?.classList.toggle('active', _currency === 'USD');
 document.getElementById('btn-eur')?.classList.toggle('active', _currency === 'EUR');
@@ -267,7 +288,7 @@ document.getElementById('btn-usd')?.addEventListener('click', () => { localStora
 document.getElementById('btn-eur')?.addEventListener('click', () => { localStorage.setItem('currency', 'EUR'); location.reload(); });
 
 // S&P 500 mit EUR-Anzeige: USD-Kurse umrechnen (nicht für ETF/DAX — deren Preise sind Indexwerte)
-if (!_isDax && !_isEtf && _currency === 'EUR') {
+if (!_isEurUni && _currency === 'EUR') {
   const thKurs = document.getElementById('th-kurs'); if (thKurs) thKurs.textContent = 'Kurs (EUR)';
   const thSma  = document.getElementById('th-sma');  if (thSma)  thSma.textContent  = 'SMA 26W (EUR)';
   document.querySelectorAll('.price-cell').forEach(el => {

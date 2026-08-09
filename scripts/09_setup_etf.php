@@ -10,6 +10,7 @@
  *   php scripts/09_setup_etf.php              # alles (Instrumente + Download + Ranking)
  *   php scripts/09_setup_etf.php --calc-only  # nur Ranking neu berechnen (keine Downloads)
  *   php scripts/09_setup_etf.php --update     # nur neue Preise + Ranking aktualisieren
+ *   php scripts/09_setup_etf.php --latest     # nur letzten Monatsultimo aktualisieren (für weekly_update)
  */
 
 chdir(dirname(__DIR__));
@@ -32,12 +33,15 @@ $ETF_INSTRUMENTS = [
     ['ticker' => 'SHY',       'name' => 'Cash / Geldmarkt',            'etf_ticker' => 'CASH',  'etf_name' => 'Geldmarkt-ETF (Cash-Proxy)',                 'sector' => 'Cash'],
 ];
 
-$args      = array_slice($argv, 1);
-$calcOnly  = in_array('--calc-only', $args);
-$updateOnly= in_array('--update',    $args);
+$args       = array_slice($argv, 1);
+$calcOnly   = in_array('--calc-only', $args);
+$updateOnly = in_array('--update',    $args);
+$latestOnly = in_array('--latest',    $args);
+// --latest: nur letzter Monatsultimo, keine Downloads (Preise wurden bereits via 10_download_etf_prices.py geladen)
+if ($latestOnly) $calcOnly = true;
 
 echo "=== ETF-Universum Setup ===\n";
-echo "Modus: " . ($calcOnly ? 'Nur Ranking' : ($updateOnly ? 'Update (neue Preise + Ranking)' : 'Vollständig')) . "\n\n";
+echo "Modus: " . ($latestOnly ? 'Nur letzter Monatsultimo (kein Download)' : ($calcOnly ? 'Nur Ranking (alle Monate)' : ($updateOnly ? 'Update (neue Preise + Ranking)' : 'Vollständig'))) . "\n\n";
 
 $db = getDB();
 
@@ -184,14 +188,22 @@ function calcSMA(array $pricesByTicker, array $datesByTicker, string $ticker, st
     return count($vals) >= 10 ? array_sum($vals) / count($vals) : null;
 }
 
-// Ranking-Insert vorbereiten
-$db->exec("DELETE FROM rsl_rankings WHERE universe='etf'");
-
+// Ranking-Insert vorbereiten (ON DUPLICATE KEY UPDATE statt DELETE — sicher für parallele Nutzung)
 $stmtRank = $db->prepare(
     'INSERT INTO rsl_rankings
        (ranking_date, ticker, sector, current_price, sma_26w, sma_200, rsl, rank_overall, rank_in_sector, is_sp500_member, is_selected, universe)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, "etf")'
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, "etf")
+     ON DUPLICATE KEY UPDATE
+       sector=VALUES(sector), current_price=VALUES(current_price),
+       sma_26w=VALUES(sma_26w), sma_200=VALUES(sma_200), rsl=VALUES(rsl),
+       rank_overall=VALUES(rank_overall), is_selected=VALUES(is_selected)'
 );
+
+// Im --latest Modus nur den letzten Monatsultimo verarbeiten
+if ($latestOnly) {
+    $monthEndDates = [end($monthEndDates)];
+    echo "  Verarbeite nur: " . $monthEndDates[0] . "\n";
+}
 
 $smaWeeksDays = SMA_WEEKS * 7;   // 27 * 7 = 189 Tage
 $inserted     = 0;

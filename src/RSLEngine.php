@@ -51,6 +51,7 @@ class RSLEngine {
              FROM rsl_rankings r
              LEFT JOIN stocks s ON s.ticker = r.ticker
              WHERE r.ranking_date = ? AND r.universe = ?
+               AND r.ticker NOT IN (SELECT ticker FROM m_and_a_flags WHERE is_active = 1)
              ORDER BY r.rsl DESC
              LIMIT ?'
         );

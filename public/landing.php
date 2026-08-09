@@ -4,8 +4,9 @@ $rsl = new RSLEngine();
 $db  = getDB();
 
 $universe = $_GET['universe'] ?? 'sp500';
-if (!in_array($universe, ['sp500', 'dax', 'etf'])) $universe = 'sp500';
+if (!in_array($universe, ['sp500', 'dax', 'hdax', 'etf'])) $universe = 'sp500';
 $isDax    = ($universe === 'dax');
+$isHdax   = ($universe === 'hdax');
 $isEtf    = ($universe === 'etf');
 
 // ETF: aktuelle Top-3 laden (is_selected=1)
@@ -36,6 +37,11 @@ if ($startDate > $maxDate) $startDate = $maxDate;
 $hasData  = (bool)$db->query('SELECT COUNT(*) FROM rsl_rankings LIMIT 1')->fetchColumn();
 $endDate  = date('Y-m-d');
 $chartDates = $chartPortfolio = $chartBenchmark = 'null';
+// Fallback-Werte für den Fall, dass keine Daten vorhanden oder EURUSD=X-Query leer
+$currentEurUsd = 1.10;
+$startEurUsd   = 1.10;
+$endEurUsd     = 1.10;
+$chartEurRates = 'null';
 
 if ($hasData) {
     // ── Rankings ab Startdatum laden ─────────────────────────────────────────
@@ -97,7 +103,7 @@ if ($hasData) {
     } else {
         // S&P 500 / DAX: wöchentlich, Top 5, Sektordiversifikation
         $maFlagged = [];
-        foreach ($db->query('SELECT ticker FROM m_and_a_flags WHERE is_active = 1')
+        foreach ($db->query('SELECT ticker FROM m_and_a_flags WHERE is_active = 1 AND (expires_date IS NULL OR expires_date > CURDATE())')
                      ->fetchAll(PDO::FETCH_COLUMN) as $t) {
             $maFlagged[$t] = true;
         }
@@ -105,10 +111,9 @@ if ($hasData) {
         foreach ($simSundays as $i => $sunday) {
             $weekRankings = $byDate[$sunday];
             $rankByTicker = array_column($weekRankings, null, 'ticker');
-            $isLast       = ($i === count($simSundays) - 1);
             $saleProceeds = [];
 
-            $holdRank = $isDax ? ($sunday >= '2021-09-20' ? 10 : 7) : 125;
+            $holdRank = $isHdax ? 25 : ($isDax ? ($sunday >= '2021-09-20' ? 10 : 7) : 125);
             foreach (array_keys($holdings) as $ticker) {
                 $rank = isset($rankByTicker[$ticker])
                     ? (int)$rankByTicker[$ticker]['rank_overall'] : PHP_INT_MAX;
@@ -127,7 +132,7 @@ if ($hasData) {
             foreach ($weekRankings as $stock) {
                 if ($vacancies <= 0) break;
                 if (isset($holdings[$stock['ticker']])) continue;
-                if ($isLast && isset($maFlagged[$stock['ticker']])) continue;
+                if (isset($maFlagged[$stock['ticker']])) continue;
                 $sector = $stock['sector'] ?? 'Unknown';
                 if (in_array($sector, $heldSectors)) continue;
                 $price = (float)$stock['current_price'];
@@ -147,7 +152,7 @@ if ($hasData) {
             }
             $weeklyPortfolio[$sunday] = $cash + $invested;
         }
-        $benchTicker = $isDax ? '^GDAXI' : 'SPY';
+        $benchTicker = $isHdax ? '^HDAX' : ($isDax ? '^GDAXI' : 'SPY');
     }
 
     // ── Benchmark ──────────────────────────────────────────────────────────
@@ -198,9 +203,11 @@ if ($hasData) {
     }
     $chartEurRates = json_encode(array_values($eurRatesBySunday));
 
+    // startEurUsd am ersten Ranking-Datum (nicht Input-Datum!) — identisch mit compare.php, simulation.php, backtest.php
     $stmtEur = $db->prepare("SELECT adj_close FROM prices WHERE ticker='EURUSD=X' AND price_date <= ? ORDER BY price_date DESC LIMIT 1");
     $stmtEur->execute([$simSundays[0]]);
     $startEurUsd = (float)($stmtEur->fetchColumn() ?: $currentEurUsd);
+    // endEurUsd am letzten Ranking-Datum (nicht currentEurUsd)
     $stmtEur->execute([end($simSundays)]);
     $endEurUsd   = (float)($stmtEur->fetchColumn() ?: $currentEurUsd);
 } else {
@@ -213,7 +220,7 @@ if ($hasData) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Relative Stärke — <?= $isEtf ? 'ETF Multi-Asset' : ($isDax ? 'DAX' : 'S&P 500') ?> Momentum-Strategie</title>
+<title>Relative Stärke nach Levy — <?= $isEtf ? 'ETF Multi-Asset' : ($isDax ? 'DAX' : 'S&P 500') ?> Momentum-Strategie</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
 <style>
@@ -253,7 +260,7 @@ if ($hasData) {
     color: #6ee7b7;
   }
   .hero h1 {
-    font-size: clamp(2.4rem, 5vw, 4rem);
+    font-size: clamp(2rem, 4vw, 3.2rem);
     font-weight: 800; letter-spacing: -.02em;
     line-height: 1.1; margin-bottom: 1.1rem;
     background: linear-gradient(135deg, #fff 40%, #93c5fd 100%);
@@ -428,8 +435,10 @@ if ($hasData) {
   .robustness-highlight .rh-sub   { font-size: .82rem; color: rgba(255,255,255,.55); margin-top: .2rem; }
 
   /* ── Navbar ─────────────────────────────────────────────────── */
+  #landing-topbar { position: fixed; top: 0; left: 0; right: 0; z-index: 101;
+    background: #0a0f1e; border-bottom: 1px solid rgba(255,255,255,.07); padding: .4rem 1.5rem; }
   .navbar { background: rgba(6,13,26,.85) !important; backdrop-filter: blur(8px);
-    border-bottom: 1px solid rgba(255,255,255,.08) !important; position: fixed; top: 0; left: 0; right: 0; z-index: 100; }
+    border-bottom: 1px solid rgba(255,255,255,.08) !important; position: fixed; top: 34px; left: 0; right: 0; z-index: 100; }
   .navbar .container-fluid { min-height: 56px; height: auto; }
   .navbar .navbar-brand { color: #fff !important; font-weight: 700; }
   .navbar .nav-link { color: rgba(255,255,255,.6) !important; font-size: .875rem; padding: .375rem .65rem !important; }
@@ -437,7 +446,8 @@ if ($hasData) {
   .currency-toggle { background: rgba(255,255,255,.1); border-radius: 20px; padding: 2px; display: flex; align-items: center; }
   .cur-btn { background: transparent; border: none; color: rgba(255,255,255,.45); font-size: .75rem; font-weight: 700; padding: .2rem .65rem; border-radius: 18px; cursor: pointer; transition: all .15s; line-height: 1.6; }
   .cur-btn.active { background: #2563eb; color: #fff; box-shadow: 0 0 0 2px rgba(37,99,235,.4); }
-  .hero { padding-top: 56px; }
+  .hero { padding-top: 90px; }
+  @media (max-width: 575px) { #landing-topbar { display: none; } .navbar { top: 0; } .hero { padding-top: 56px; } }
 
   /* ── Footer ─────────────────────────────────────────────────── */
   .landing-footer {
@@ -455,6 +465,17 @@ if ($hasData) {
 <!-- ═══════════════════════════════════════════════════════════════
      HERO
 ════════════════════════════════════════════════════════════════ -->
+<div id="landing-topbar">
+  <a href="https://investsignal.de"
+     style="display:inline-flex;align-items:center;gap:.4rem;font-size:.78rem;font-weight:600;color:#64748b;text-decoration:none;transition:color .15s;"
+     onmouseover="this.style.color='#10b981'" onmouseout="this.style.color='#64748b'">
+    <svg width="14" height="11" viewBox="0 0 28 22" fill="none">
+      <polyline points="2,18 8,12 14,15 22,5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <polyline points="18,4 23,4 23,9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    ← investsignal.de
+  </a>
+</div>
 <?php $activePage = 'landing'; include __DIR__ . '/inc_navbar.php'; ?>
 
 <section class="hero">
@@ -467,17 +488,19 @@ if ($hasData) {
           <i class="bi bi-<?= $isEtf ? 'globe2' : 'graph-up-arrow' ?>"></i>
           <?= $isEtf ? 'Multi-Asset Momentum-Strategie' : 'Quantitative Momentum-Strategie' ?>
         </div>
-        <h1>Relative Stärke<br><?= $isEtf ? 'ETF Multi-Asset' : ($isDax ? 'DAX' : 'S&amp;P 500') ?></h1>
+        <h1>Relative Stärke nach&nbsp;Levy<br><?= $isEtf ? 'ETF Multi-Asset' : ($isHdax ? 'HDAX' : ($isDax ? 'DAX' : 'S&amp;P 500')) ?></h1>
         <p class="hero-sub">
           <?php if ($isEtf): ?>
           Systematische Allokation in die <strong style="color:#fff;">stärksten Anlageklassen</strong> weltweit —
           8 Asset-Klassen, monatliches Rebalancing, RSL-Ranking kombiniert mit
           <strong style="color:#fff;">SMA200-Trendfilter</strong>. Stets in den Top 3 investiert, Rest in Cash.
           <?php else: ?>
-          Systematisches Aktien-Screening auf Basis der <strong style="color:#fff;">Relativen Stärke</strong> —
+          Systematisches Aktien-Screening auf Basis der <strong style="color:#fff;">Relativen Stärke nach Levy</strong> —
           wöchentliches Rebalancing, strikte Sektor-Diversifikation, vollständig regelbasiert.
           <?php if ($isDax): ?>
           Universum: <strong style="color:#fff;">DAX 40</strong> — 40 führende deutsche Unternehmen.
+          <?php elseif ($isHdax): ?>
+          Universum: <strong style="color:#fff;">HDAX</strong> — die 100 größten deutschen Aktien (DAX 40 + MDAX 60).
           <?php endif; ?>
           <?php endif; ?>
         </p>
@@ -496,7 +519,7 @@ if ($hasData) {
           </div>
           <div class="hero-kpi">
             <div class="hero-kpi-val kv-blue" id="lkpi-outperf">—</div>
-            <div class="hero-kpi-label">vs. <?= $isEtf ? 'MSCI ACWI (ACWI)' : ($isDax ? 'DAX (^GDAXI)' : 'S&amp;P 500') ?></div>
+            <div class="hero-kpi-label">vs. <?= $isEtf ? 'MSCI ACWI (ACWI)' : ($isHdax ? 'HDAX (^HDAX)' : ($isDax ? 'DAX (^GDAXI)' : 'S&amp;P 500')) ?></div>
           </div>
           <div class="hero-kpi">
             <div class="hero-kpi-val kv-amber" id="lkpi-cagr">—</div>
@@ -556,6 +579,13 @@ if ($hasData) {
             auf Basis der historischen Index-Zusammensetzung.
             Datenbasis: 40 führende deutsche Unternehmen mit Kurshistorie ab 2010.
           </div>
+          <?php elseif ($isHdax): ?>
+          <div class="step-title">Universum: HDAX</div>
+          <div class="step-body">
+            Das Anlageuniversum umfasst die <strong>~90 größten deutschen Aktien</strong>
+            (DAX 40 + MDAX 50) — breiter als der DAX, mit mehr Mid-Cap-Wachstumstiteln.
+            Datenbasis: Kurshistorie ab 2010.
+          </div>
           <?php else: ?>
           <div class="step-title">Universum: S&amp;P 500</div>
           <div class="step-body">
@@ -571,22 +601,22 @@ if ($hasData) {
       <div class="col-md-6 col-xl-4 fade-up">
         <div class="step-card green">
           <div class="step-num green">2</div>
-          <div class="step-title">RS-Berechnung</div>
+          <div class="step-title">RSL-Berechnung</div>
           <?php if ($isEtf): ?>
           <div class="step-body">
-            Für jede Anlageklasse wird monatlich der <strong>Relativen Stärke</strong>
+            Für jede Anlageklasse wird monatlich der <strong>Relativen Stärke nach Levy</strong>
             berechnet: aktueller Kurs dividiert durch den Durchschnitt der letzten
-            <strong>27 Wochen</strong>. Ein RS &gt; 1 signalisiert Momentum.
+            <strong>27 Wochen</strong>. Ein RSL &gt; 1 signalisiert Momentum.
           </div>
-          <div class="step-formula">RS = Kurs<sub>aktuell</sub> / MA<sub>27W</sub></div>
+          <div class="step-formula">RSL = Kurs<sub>aktuell</sub> / MA<sub>27W</sub></div>
           <?php else: ?>
           <div class="step-body">
-            Für jede Aktie wird wöchentlich der <strong>Relativen Stärke</strong>
+            Für jede Aktie wird wöchentlich der <strong>Relativen Stärke nach Levy</strong>
             berechnet: der aktuelle Kurs dividiert durch den gleitenden Durchschnitt
             der letzten 26 Wochen (130 Handelstage).
-            Ein RS &gt; 1 signalisiert überdurchschnittliche relative Stärke.
+            Ein RSL &gt; 1 signalisiert überdurchschnittliche relative Stärke.
           </div>
-          <div class="step-formula">RS = Kurs<sub>aktuell</sub> / SMA<sub>26W</sub></div>
+          <div class="step-formula">RSL = Kurs<sub>aktuell</sub> / SMA<sub>26W</sub></div>
           <?php endif; ?>
         </div>
       </div>
@@ -599,14 +629,14 @@ if ($hasData) {
           <div class="step-body">
             Nur Anlageklassen, bei denen der aktuelle Kurs <strong>über dem 200-Tage-Durchschnitt</strong>
             notiert, sind investierbar. Liegt der Kurs darunter, wird die Anlageklasse
-            ignoriert — unabhängig von ihrem RS-Rang. Dies schützt vor Investments
+            ignoriert — unabhängig von ihrem RSL-Rang. Dies schützt vor Investments
             in anhaltende Abwärtstrends.
           </div>
           <div class="step-formula">Kurs &gt; SMA(200) → investierbar</div>
           <?php else: ?>
           <div class="step-title">Ranking &amp; Selektion</div>
           <div class="step-body">
-            Alle <?= $isDax ? 'DAX' : 'S&amp;P 500' ?>-Aktien werden nach RSL absteigend sortiert.
+            Alle <?= $isHdax ? 'HDAX' : ($isDax ? 'DAX' : 'S&amp;P 500') ?>-Aktien werden nach RSL absteigend sortiert.
             Aus den <strong>Top-Aktien</strong> werden exakt <strong>5 Positionen</strong> ausgewählt —
             mit der Bedingung, dass je Sektor (GICS) maximal eine Aktie ins Portfolio aufgenommen wird
             (Greedy-Algorithmus, höchster RSL gewinnt).
@@ -631,6 +661,8 @@ if ($hasData) {
             Eine Position wird <strong>gehalten</strong>, solange ihre Aktie unter den
             <?php if ($isDax): ?>
             <strong>Top 10</strong> des Rankings bleibt (Rang ≤ 10, vor Sept. 2021: Rang ≤ 7).
+            <?php elseif ($isHdax): ?>
+            <strong>Top 25</strong> des Rankings bleibt (Rang ≤ 25).
             <?php else: ?>
             <strong>Top 125</strong> des Rankings bleibt (Rang ≤ 125).
             <?php endif; ?>
@@ -656,7 +688,7 @@ if ($hasData) {
           <?php else: ?>
           <div class="step-title">Wöchentliches Rebalancing</div>
           <div class="step-body">
-            Jeden <strong>Sonntag</strong> wird das Portfolio überprüft.
+            Jeden <strong>Freitag</strong> wird das Portfolio überprüft.
             Verkaufserlöse werden 1:1 in die Nachfolge-Position reinvestiert
             (kein Kapital-Nachschuss, kein Umverteilen auf andere Positionen).
             Erstkäufe bei leerem Slot: gleichmäßige Aufteilung des verfügbaren Kapitals.
@@ -718,7 +750,7 @@ if ($hasData) {
           <div class="assumption-icon"><i class="bi bi-funnel-fill"></i></div>
           <div>
             <div class="assumption-title">Trendfilter SMA 200</div>
-            <div class="assumption-body">Anlageklassen unterhalb ihres 200-Tage-Durchschnitts sind nicht investierbar — auch wenn ihr RSL hoch ist. Dies schützt vor Investments in anhaltende Abwärtsbewegungen (Bärenmärkte).</div>
+            <div class="assumption-body">Anlageklassen unterhalb ihres 200-Tage-Durchschnitts sind nicht investierbar — auch wenn ihr RS hoch ist. Dies schützt vor Investments in anhaltende Abwärtsbewegungen (Bärenmärkte).</div>
           </div>
         </div>
         <div class="assumption-item">
@@ -733,14 +765,14 @@ if ($hasData) {
           <div class="assumption-icon"><i class="bi bi-shuffle"></i></div>
           <div>
             <div class="assumption-title">Kein Survivorship Bias</div>
-            <div class="assumption-body">Die historische <?= $isDax ? 'DAX' : 'S&amp;P 500' ?>-Zusammensetzung wird wochengenau berücksichtigt. <?= $isDax ? 'Aktien, die aus dem DAX ausgeschieden sind, werden im Backtest berücksichtigt.' : 'Aktien, die nach 2020 aus dem Index entfernt wurden, sind im Backtest enthalten.' ?></div>
+            <div class="assumption-body">Die historische <?= $isHdax ? 'HDAX' : ($isDax ? 'DAX' : 'S&amp;P 500') ?>-Zusammensetzung wird wochengenau berücksichtigt. <?= ($isDax || $isHdax) ? 'Aktien, die aus dem Index ausgeschieden sind, werden im Backtest berücksichtigt.' : 'Aktien, die nach 2020 aus dem Index entfernt wurden, sind im Backtest enthalten.' ?></div>
           </div>
         </div>
         <div class="assumption-item">
           <div class="assumption-icon"><i class="bi bi-slash-circle"></i></div>
           <div>
             <div class="assumption-title">M&amp;A-Filter</div>
-            <div class="assumption-body">Aktien in laufenden Übernahme- oder Fusionssituationen werden von der Selektion ausgeschlossen. M&amp;A-Ankündigungen treiben den Kurs künstlich nach oben und verfälschen damit den RS-Wert — ein Kaufsignal wäre in diesen Fällen irreführend.</div>
+            <div class="assumption-body">Aktien in laufenden Übernahme- oder Fusionssituationen werden von der Selektion ausgeschlossen. M&amp;A-Ankündigungen treiben den Kurs künstlich nach oben und verfälschen damit den RSL-Wert — ein Kaufsignal wäre in diesen Fällen irreführend.</div>
           </div>
         </div>
         <?php endif; ?>
@@ -791,7 +823,7 @@ if ($hasData) {
     <div class="text-center mb-4 fade-up">
       <div class="section-eyebrow" style="color:<?= $isEtf ? '#6ee7b7' : '#93c5fd' ?>;">Aktuell</div>
       <h2 class="section-title" style="color:#fff;font-size:1.6rem;">
-        <?= $isEtf ? 'Aktuelles ETF Top-3 Portfolio' : 'Aktuelles RS Top-5 Portfolio' ?>
+        <?= $isEtf ? 'Aktuelles ETF Top-3 Portfolio' : 'Aktuelles RSL Top-5 Portfolio' ?>
       </h2>
       <?php if ($isEtf): ?>
       <p style="color:rgba(255,255,255,.55);font-size:.85rem;margin-top:.5rem;">
@@ -804,7 +836,7 @@ if ($hasData) {
       <div class="ticker-pill" <?= $isEtf ? 'style="min-width:200px;"' : '' ?>>
         <div class="tp-ticker"><?= htmlspecialchars($s['ticker']) ?></div>
         <div class="tp-name"><?= htmlspecialchars(mb_substr($isEtf ? ($etfMap[$s['ticker']] ?? $s['ticker']) : ($s['name'] ?? $s['ticker']), 0, 30)) ?></div>
-        <div class="tp-rsl">RSL <?= number_format($s['rsl'], 4, ',', '.') ?></div>
+        <div class="tp-rsl">RS <?= number_format($s['rsl'], 4, ',', '.') ?></div>
       </div>
       <?php endforeach; ?>
     </div>
@@ -911,7 +943,7 @@ if ($hasData) {
           <h5 style="color:#fff; font-weight:700; margin-bottom:.5rem;">Backtest-Ergebnis: DAX (2010–2026)</h5>
           <p style="color:rgba(255,255,255,.65); font-size:.9rem; margin:0; line-height:1.7;">
             Über den gesamten Zeitraum von Januar 2010 bis heute — mit wöchentlichem Rebalancing
-            und Sektordiversifikation — wird die RS-Strategie auf den <strong style="color:#fff;">DAX 40</strong>
+            und Sektordiversifikation — wird die RSL-Strategie auf den <strong style="color:#fff;">DAX 40</strong>
             angewendet. Benchmark ist der DAX-Index (<strong style="color:#fff;">^GDAXI</strong>).
             Alle Kurse und Ergebnisse in <strong style="color:#4ade80;">EUR</strong>.
             Genaue Kennzahlen entnehmen Sie dem <a href="<?= navUrl('backtest.php', $universe) ?>" style="color:#93c5fd;">Backtest</a>.
@@ -950,7 +982,7 @@ if ($hasData) {
           <h5 style="color:#fff; font-weight:700; margin-bottom:.5rem;">Backtest-Ergebnis: 16 Jahre (2010–2026)</h5>
           <p style="color:rgba(255,255,255,.65); font-size:.9rem; margin:0; line-height:1.7;">
             Über den gesamten Zeitraum von Januar 2010 bis heute — mit wöchentlichem Rebalancing
-            und Sektordiversifikation — lieferte die RS-Strategie eine annualisierte Rendite
+            und Sektordiversifikation — lieferte die RSL-Strategie eine annualisierte Rendite
             von rund <strong style="color:#4ade80;">23,6% p.a.</strong> bei 473 Trades. Das entspricht einer Gesamtrendite von knapp <strong style="color:#4ade80;">3.000%</strong>
             gegenüber dem S&amp;P 500 als Vergleichsmaßstab. Der maximale Drawdown betrug
             <strong style="color:#fbbf24;">–45,5%</strong> (u.a. COVID-Crash 2020).
@@ -1073,10 +1105,11 @@ if ($hasData) {
         <table class="table mb-0" style="--bs-table-bg:transparent;">
           <thead>
             <tr style="background:#0f172a;">
-              <th style="padding:.85rem 1.25rem; font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:rgba(255,255,255,.5); width:22%;">Merkmal</th>
-              <th style="padding:.85rem 1.25rem; font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:#6ee7b7; width:26%;">🌐 ETF Multi-Asset</th>
-              <th style="padding:.85rem 1.25rem; font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:#93c5fd; width:26%;">🇺🇸 S&amp;P 500</th>
-              <th style="padding:.85rem 1.25rem; font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:#fca5a5; width:26%;">🇩🇪 DAX</th>
+              <th style="padding:.85rem 1.25rem; font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:rgba(255,255,255,.5); width:18%;">Merkmal</th>
+              <th style="padding:.85rem 1.25rem; font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:#6ee7b7; width:20%;">🌐 ETF Multi-Asset</th>
+              <th style="padding:.85rem 1.25rem; font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:#93c5fd; width:20%;"><img src="https://flagcdn.com/16x12/us.png" width="14" height="10" style="vertical-align:middle;margin-right:4px;"> S&amp;P 500</th>
+              <th style="padding:.85rem 1.25rem; font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:#fca5a5; width:20%;"><img src="https://flagcdn.com/16x12/de.png" width="14" height="10" style="vertical-align:middle;margin-right:4px;"> DAX</th>
+              <th style="padding:.85rem 1.25rem; font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:#fdba74; width:22%;"><img src="https://flagcdn.com/16x12/de.png" width="14" height="10" style="vertical-align:middle;margin-right:4px;"> HDAX</th>
             </tr>
           </thead>
           <tbody>
@@ -1086,61 +1119,73 @@ if ($hasData) {
                'etf'=>'8 globale Anlageklassen (Aktien, Gold, Anleihen, Cash)',
                'sp'=>'~580 US-Aktien (historische S&amp;P 500-Mitglieder)',
                'dax'=>'40 deutsche Aktien (historische DAX-Mitglieder)',
+               'hdax'=>'~90 deutsche Aktien (DAX 40 + MDAX 50)',
                'highlight'=>false],
-              ['label'=>'RS-Formel',
+              ['label'=>'RSL-Formel',
                'etf'=>'Kurs ÷ SMA <strong>27 Wochen</strong>',
                'sp'=>'Kurs ÷ SMA <strong>26 Wochen</strong>',
                'dax'=>'Kurs ÷ SMA <strong>26 Wochen</strong>',
+               'hdax'=>'Kurs ÷ SMA <strong>26 Wochen</strong>',
                'highlight'=>true],
               ['label'=>'Trendfilter',
                'etf'=>'<strong style="color:#065f46;">✔ SMA 200</strong> — nur investierbar wenn Kurs &gt; SMA200',
                'sp'=>'<span style="color:#9ca3af;">— kein Filter</span>',
                'dax'=>'<span style="color:#9ca3af;">— kein Filter</span>',
+               'hdax'=>'<span style="color:#9ca3af;">— kein Filter</span>',
                'highlight'=>true],
               ['label'=>'Positionen',
                'etf'=>'<strong>Top 3</strong> (gleichgewichtet, 33,3 % je)',
                'sp'=>'<strong>Top 5</strong> (gleichgewichtet, 20 % je)',
                'dax'=>'<strong>Top 5</strong> (gleichgewichtet, 20 % je)',
+               'hdax'=>'<strong>Top 5</strong> (gleichgewichtet, 20 % je)',
                'highlight'=>true],
               ['label'=>'Sektordiversifikation',
                'etf'=>'<span style="color:#9ca3af;">— nicht anwendbar</span>',
                'sp'=>'<strong style="color:#1d4ed8;">✔</strong> Max. 1 Aktie pro GICS-Sektor',
                'dax'=>'<strong style="color:#1d4ed8;">✔</strong> Max. 1 Aktie pro Sektor',
+               'hdax'=>'<strong style="color:#1d4ed8;">✔</strong> Max. 1 Aktie pro Sektor',
                'highlight'=>false],
               ['label'=>'Rebalancing',
                'etf'=>'<strong style="color:#065f46;">Monatlich</strong> (letzter Handelstag)',
-               'sp'=>'<strong>Wöchentlich</strong> (sonntags)',
-               'dax'=>'<strong>Wöchentlich</strong> (sonntags)',
+               'sp'=>'<strong>Wöchentlich</strong> (freitags)',
+               'dax'=>'<strong>Wöchentlich</strong> (freitags)',
+               'hdax'=>'<strong>Wöchentlich</strong> (freitags)',
                'highlight'=>true],
               ['label'=>'Halte-Schwelle',
                'etf'=>'Nicht mehr in Top 3 <em>oder</em> Kurs &lt; SMA200',
                'sp'=>'Rang &gt; 125',
                'dax'=>'Rang &gt; 10 (vor Sept. 2021: &gt; 7)',
+               'hdax'=>'Rang &gt; 25',
                'highlight'=>false],
               ['label'=>'Cash-Regel',
                'etf'=>'<strong style="color:#065f46;">✔</strong> Wenn &lt; 3 Klassen qualifizieren → Rest in Cash',
                'sp'=>'<span style="color:#9ca3af;">— kein Cash-Puffer</span>',
                'dax'=>'<span style="color:#9ca3af;">— kein Cash-Puffer</span>',
+               'hdax'=>'<span style="color:#9ca3af;">— kein Cash-Puffer</span>',
                'highlight'=>true],
               ['label'=>'M&amp;A-Filter',
                'etf'=>'<span style="color:#9ca3af;">— nicht relevant</span>',
                'sp'=>'<strong style="color:#1d4ed8;">✔</strong> Übernahme-Kandidaten ausgeschlossen',
                'dax'=>'<strong style="color:#1d4ed8;">✔</strong> Übernahme-Kandidaten ausgeschlossen',
+               'hdax'=>'<strong style="color:#1d4ed8;">✔</strong> Übernahme-Kandidaten ausgeschlossen',
                'highlight'=>false],
               ['label'=>'Benchmark',
                'etf'=>'MSCI ACWI (iShares ACWI ETF)',
                'sp'=>'S&amp;P 500 (SPY)',
                'dax'=>'DAX-Index (^GDAXI)',
+               'hdax'=>'HDAX-Index (^HDAX)',
                'highlight'=>false],
               ['label'=>'Währung',
                'etf'=>'<strong style="color:#065f46;">EUR</strong> (Anzeige; Indizes als Proxy)',
                'sp'=>'USD oder EUR (umrechenbar)',
                'dax'=>'EUR',
+               'hdax'=>'EUR',
                'highlight'=>false],
               ['label'=>'Backtest ab',
                'etf'=>'Januar 2000 (25+ Jahre)',
                'sp'=>'Januar 2010 (15+ Jahre)',
                'dax'=>'Januar 2010 (15+ Jahre)',
+               'hdax'=>'Januar 2010 (15+ Jahre)',
                'highlight'=>false],
             ];
             foreach ($rows as $i => $row):
@@ -1152,6 +1197,7 @@ if ($hasData) {
               <td style="padding:.75rem 1.25rem; font-size:.82rem; color:#065f46; background:<?= $row['highlight'] ? 'rgba(209,250,229,.35)' : 'inherit' ?>;"><?= $row['etf'] ?></td>
               <td style="padding:.75rem 1.25rem; font-size:.82rem; color:#1e3a5f;"><?= $row['sp'] ?></td>
               <td style="padding:.75rem 1.25rem; font-size:.82rem; color:#1e3a5f;"><?= $row['dax'] ?></td>
+              <td style="padding:.75rem 1.25rem; font-size:.82rem; color:#1e3a5f;"><?= $row['hdax'] ?></td>
             </tr>
             <?php endforeach; ?>
           </tbody>
@@ -1168,10 +1214,124 @@ if ($hasData) {
 <?php endif; ?>
 
 <!-- ═══════════════════════════════════════════════════════════════
+     DISCLAIMER
+════════════════════════════════════════════════════════════════ -->
+<section style="background:#7f1d1d; padding:3.5rem 0;">
+  <div class="container px-4">
+    <div style="background:rgba(0,0,0,.25); border:2px solid rgba(255,255,255,.2); border-radius:16px; padding:2.5rem;">
+
+      <div class="d-flex align-items-center gap-3 mb-4">
+        <div style="background:#dc2626; border-radius:12px; width:52px; height:52px; display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:1.5rem;">
+          ⚠️
+        </div>
+        <div>
+          <div style="font-size:.72rem; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:#fca5a5; margin-bottom:.2rem;">Rechtlicher Hinweis</div>
+          <h3 style="color:#fff; font-weight:800; font-size:1.4rem; margin:0; line-height:1.2;">Haftungsausschluss &amp; Risikohinweis</h3>
+        </div>
+      </div>
+
+      <div style="color:rgba(255,255,255,.85); font-size:.9rem; line-height:1.8;">
+
+        <p style="margin-bottom:1.2rem;">
+          <strong style="color:#fff;">Diese Website und alle darin enthaltenen Informationen, Analysen, Berechnungen, Backtests und
+          Darstellungen dienen ausschließlich zu Schulungs-, Illustrations- und Informationszwecken.</strong>
+          Sie stellen in keiner Weise eine Anlageberatung, Anlageempfehlung, Aufforderung zum Kauf oder Verkauf
+          von Wertpapieren, Finanzinstrumenten oder sonstigen Kapitalanlagen dar und ersetzen nicht die
+          individuelle, professionelle Beratung durch einen zugelassenen Finanzberater oder eine regulierte
+          Wertpapierfirma.
+        </p>
+
+        <div class="row g-4 mb-4">
+          <div class="col-md-6">
+            <div style="background:rgba(0,0,0,.2); border-radius:10px; padding:1.25rem;">
+              <div style="color:#fca5a5; font-weight:700; font-size:.85rem; margin-bottom:.6rem; text-transform:uppercase; letter-spacing:.05em;">
+                📉 Keine Garantie für Ergebnisse
+              </div>
+              <p style="margin:0; font-size:.85rem; color:rgba(255,255,255,.75);">
+                Vergangene Wertentwicklungen — einschließlich aller auf dieser Website dargestellten Backtests —
+                sind <strong style="color:#fff;">kein verlässlicher Indikator für zukünftige Ergebnisse</strong>.
+                Backtests bilden historische Daten nach und sind grundsätzlich mit Unsicherheiten behaftet.
+                Reale Handelsergebnisse können erheblich von simulierten Ergebnissen abweichen.
+              </p>
+            </div>
+          </div>
+          <div class="col-md-6">
+            <div style="background:rgba(0,0,0,.2); border-radius:10px; padding:1.25rem;">
+              <div style="color:#fca5a5; font-weight:700; font-size:.85rem; margin-bottom:.6rem; text-transform:uppercase; letter-spacing:.05em;">
+                💸 Verlustrisiko
+              </div>
+              <p style="margin:0; font-size:.85rem; color:rgba(255,255,255,.75);">
+                Investitionen in Wertpapiere und Finanzinstrumente sind mit erheblichen Risiken verbunden,
+                einschließlich des <strong style="color:#fff;">vollständigen Verlusts des eingesetzten Kapitals</strong>.
+                Kursschwankungen, Marktrisiken, Währungsrisiken, Liquiditätsrisiken und politische Risiken
+                können zu Verlusten führen, die über die ursprüngliche Investition hinausgehen.
+              </p>
+            </div>
+          </div>
+          <div class="col-md-6">
+            <div style="background:rgba(0,0,0,.2); border-radius:10px; padding:1.25rem;">
+              <div style="color:#fca5a5; font-weight:700; font-size:.85rem; margin-bottom:.6rem; text-transform:uppercase; letter-spacing:.05em;">
+                🔬 Modellbeschränkungen
+              </div>
+              <p style="margin:0; font-size:.85rem; color:rgba(255,255,255,.75);">
+                Die dargestellten Strategien enthalten vereinfachende Modellannahmen (u.&nbsp;a. keine
+                Transaktionskosten, keine Steuern, Bruchteilsaktien, idealisierte Ausführungspreise).
+                <strong style="color:#fff;">In der Praxis führen diese Faktoren zu abweichenden Ergebnissen.</strong>
+                Das Modell wurde nicht auf Echtzeithandel optimiert und ist nicht zur direkten Replikation gedacht.
+              </p>
+            </div>
+          </div>
+          <div class="col-md-6">
+            <div style="background:rgba(0,0,0,.2); border-radius:10px; padding:1.25rem;">
+              <div style="color:#fca5a5; font-weight:700; font-size:.85rem; margin-bottom:.6rem; text-transform:uppercase; letter-spacing:.05em;">
+                ⚖️ Keine Anlageberatung
+              </div>
+              <p style="margin:0; font-size:.85rem; color:rgba(255,255,255,.75);">
+                Diese Website ist <strong style="color:#fff;">nicht als Finanzdienstleistung im Sinne des
+                Wertpapierhandelsgesetzes (WpHG) oder der EU-Richtlinie MiFID&nbsp;II</strong> zu verstehen.
+                Der Betreiber ist kein zugelassener Anlageberater, Vermögensverwalter oder Finanzintermediär.
+                Es besteht keine Erlaubnis der BaFin oder einer anderen Aufsichtsbehörde.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div style="background:rgba(220,38,38,.25); border:1px solid rgba(252,165,165,.3); border-radius:10px; padding:1.25rem; margin-bottom:1.2rem;">
+          <strong style="color:#fff;">Haftungsausschluss:</strong>
+          Der Betreiber dieser Website übernimmt <strong style="color:#fff;">keinerlei Haftung</strong> für
+          Verluste oder Schäden — gleich welcher Art —, die direkt oder indirekt aus der Nutzung der auf dieser
+          Website bereitgestellten Informationen entstehen. Dies gilt insbesondere für finanzielle Verluste,
+          entgangene Gewinne, Folgeschäden und mittelbare Schäden. Sämtliche Entscheidungen, die auf Basis der
+          hier dargestellten Informationen getroffen werden, liegen ausschließlich in der Verantwortung des
+          Nutzers.
+        </div>
+
+        <p style="margin-bottom:1.2rem; font-size:.85rem; color:rgba(255,255,255,.65);">
+          <strong style="color:rgba(255,255,255,.85);">Datenqualität:</strong>
+          Alle Kursdaten werden automatisiert über die Yahoo Finance API bezogen. Trotz sorgfältiger Verarbeitung
+          können Datenausfälle, Kurslücken, fehlerhafte Splits oder sonstige Unregelmäßigkeiten auftreten.
+          Der Betreiber übernimmt keine Gewähr für die Vollständigkeit, Richtigkeit oder Aktualität der
+          dargestellten Kursdaten und Kennzahlen.
+        </p>
+
+        <p style="margin:0; font-size:.85rem; color:rgba(255,255,255,.65);">
+          <strong style="color:rgba(255,255,255,.85);">Vor jeder Anlageentscheidung</strong> sollten Sie
+          Ihre persönliche finanzielle Situation, Ihre Risikobereitschaft und Ihre Anlageziele sorgfältig
+          prüfen und gegebenenfalls einen unabhängigen, zugelassenen Finanzberater konsultieren.
+          Die Nutzung dieser Website erfolgt auf eigene Verantwortung und setzt das Verständnis
+          und die Akzeptanz dieser Hinweise voraus.
+        </p>
+
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════
      FOOTER
 ════════════════════════════════════════════════════════════════ -->
 <div class="landing-footer">
-  Relative Stärke — <?= $isEtf ? 'ETF Multi-Asset' : ($isDax ? 'DAX' : 'S&amp;P 500') ?> Momentum-System &nbsp;|&nbsp;
+  Relative Stärke nach Levy — <?= $isEtf ? 'ETF Multi-Asset' : ($isDax ? 'DAX' : 'S&amp;P 500') ?> Momentum-System &nbsp;|&nbsp;
   Apache · MariaDB · PHP 8.2 &nbsp;|&nbsp;
   Daten: Yahoo Finance &nbsp;|&nbsp;
   Kein Anlageberater — nur zu Informationszwecken
@@ -1192,8 +1352,10 @@ document.querySelectorAll('.fade-up').forEach(el => obs.observe(el));
 
 // ── Universe / Currency ──────────────────────────────────────────────
 const _isDax       = <?= $isDax ? 'true' : 'false' ?>;
+const _isHdax      = <?= $isHdax ? 'true' : 'false' ?>;
 const _isEtf       = <?= $isEtf ? 'true' : 'false' ?>;
-const _currency    = (_isDax || _isEtf) ? 'EUR' : (localStorage.getItem('currency') || 'USD');
+const _isEurUni    = (_isDax || _isHdax || _isEtf);
+const _currency    = _isEurUni ? 'EUR' : (localStorage.getItem('currency') || 'EUR');
 document.getElementById('btn-usd')?.classList.toggle('active', _currency === 'USD');
 document.getElementById('btn-eur')?.classList.toggle('active', _currency === 'EUR');
 document.getElementById('btn-usd')?.addEventListener('click', () => { localStorage.setItem('currency', 'USD'); location.reload(); });
@@ -1205,7 +1367,7 @@ const endEurUsd     = <?= round($endEurUsd, 6) ?>;
 const allEurRates   = <?= $chartEurRates ?>;
 
 // Währungshinweis in KPI-Labels setzen
-const currLabel = (_isDax || _currency === 'EUR') ? '(EUR)' : '(USD)';
+const currLabel = (_isEurUni || _currency === 'EUR') ? '(EUR)' : '(USD)';
 if (document.getElementById('lkpi-curr')) document.getElementById('lkpi-curr').textContent = currLabel;
 document.querySelectorAll('.lkpi-curr-ref').forEach(el => el.textContent = currLabel);
 
@@ -1213,7 +1375,7 @@ document.querySelectorAll('.lkpi-curr-ref').forEach(el => el.textContent = currL
 (function () {
   const _univ = new URLSearchParams(window.location.search).get('universe') || 'sp500';
   const _startKey = 'sim_start_date_' + _univ;
-  const _defaultStart = _isEtf ? '2010-01-31' : (_isDax ? '2010-01-04' : '2024-01-01');
+  const _defaultStart = _isEtf ? '2010-01-31' : ((_isDax || _isHdax) ? '2010-01-04' : '2024-01-01');
   const simStart = localStorage.getItem(_startKey) || _defaultStart;
   const urlStart = new URLSearchParams(window.location.search).get('start_date');
   if (simStart !== urlStart) {
@@ -1232,38 +1394,28 @@ document.querySelectorAll('.lkpi-curr-ref').forEach(el => el.textContent = currL
   const endPort   = [...allPortfolio].reverse().find(v => v !== null);
   const endBench  = [...allBenchmark].reverse().find(v => v !== null);
 
-  const eurStart  = allEurRates ? (allEurRates.find(v => v > 0) || currentEurUsd) : currentEurUsd;
-  const eurEnd    = allEurRates ? ([...allEurRates].reverse().find(v => v > 0) || currentEurUsd) : currentEurUsd;
+  // FX-Faktoren: startEurUsd (PHP, am Input-Datum) / endEurUsd (PHP, am letzten Ranking-Datum)
+  // Identisch mit compare.php runSim() — NICHT allEurRates-Array verwenden (verschiedene Referenzdaten).
   // ETF + DAX: Portfolio-Werte sind EUR-nativ → kein FX-Faktor für Portfolio
   // S&P 500 EUR-Modus: FX-Faktor (USD→EUR) auf Portfolio anwenden
-  const portFx   = (_isDax || _isEtf) ? 1 : (_currency === 'EUR' ? (eurStart / eurEnd) : 1);
+  const portFx      = _isEurUni ? 1 : (_currency === 'EUR' ? (startEurUsd / endEurUsd) : 1);
   // Benchmark-FX: ACWI/SPY sind USD → immer FX wenn EUR-Anzeige
-  const benchFxFull = (_isDax) ? 1 : (_currency === 'EUR' ? (eurStart / eurEnd) : 1);
+  const benchFxFull = (_isDax || _isHdax) ? 1 : (_currency === 'EUR' ? (startEurUsd / endEurUsd) : 1);
 
   // Gesamt-Rendite Portfolio (voller Zeitraum, EUR-nativ für ETF/DAX)
   const totalReturn = base > 0 ? ((endPort / base) * portFx - 1) * 100 : 0;
 
-  // Outperformance: für ETF nur über gemeinsamen Zeitraum (ab erstem Benchmark-Datum)
+  // Outperformance: benchmark immer ab erstem Sim-Datum (identisch compare.php)
   let benchReturn, outperf;
   const firstBenchIdx = allBenchmark.findIndex(v => v !== null);
-  if (_isEtf && firstBenchIdx > 0) {
-    // ETF: gemeinsamer Zeitraum ab ACWI-Start
-    const portAtBenchStart = allPortfolio[firstBenchIdx];
-    const portAtEnd        = endPort;
-    const eurAtBenchStart  = (allEurRates && allEurRates[firstBenchIdx] > 0)
-                             ? allEurRates[firstBenchIdx] : currentEurUsd;
-    // Portfolio EUR-nativ → kein FX
-    const portReturnCommon = portAtBenchStart > 0
-      ? (portAtEnd / portAtBenchStart - 1) * 100 : 0;
-    // ACWI ist USD → FX anwenden
-    const acwiFx = eurAtBenchStart / eurEnd;
-    benchReturn = baseBench > 0 ? ((endBench / baseBench) * acwiFx - 1) * 100 : 0;
-    outperf     = portReturnCommon - benchReturn;
-  } else {
-    // S&P 500 / DAX / ETF (wenn firstBenchIdx=0): voller gemeinsamer Zeitraum
-    benchReturn = baseBench > 0 ? ((endBench / baseBench) * benchFxFull - 1) * 100 : 0;
-    outperf     = totalReturn - benchReturn;
-  }
+  // ETF: EUR/USD am ersten Sim-Datum (nicht am Input-Datum) verwenden —
+  // ETF-Rankings starten am Monatsultimo, der bis zu 30 Tage nach Input-Datum liegen kann
+  const eurAtSimStart = (_isEtf && allEurRates && allEurRates[0] > 0)
+    ? allEurRates[0] : startEurUsd;
+  const benchFxActual = (_isDax || _isHdax) ? 1
+    : (_currency === 'EUR' ? (eurAtSimStart / endEurUsd) : 1);
+  benchReturn = baseBench > 0 ? ((endBench / baseBench) * benchFxActual - 1) * 100 : 0;
+  outperf     = totalReturn - benchReturn;
 
   // CAGR (voller Zeitraum, Portfolio, EUR-nativ für ETF/DAX)
   const startDateStr = allLabels[0];
